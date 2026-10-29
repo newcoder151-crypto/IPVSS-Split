@@ -1,0 +1,49 @@
+# MediaMTX configuration for Railway mNVR
+logLevel: info
+logDestinations: [stdout]
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 512
+udpMaxPayloadSize: 1472
+
+# RTSP ingest from cameras
+rtsp: yes
+rtspAddress: :8554
+# rtspEncryption: no
+
+# WebRTC for browser playback (low-latency, ~200ms)
+webrtc: yes
+webrtcAddress: :8889
+webrtcICEServers2: []
+
+# HLS fallback
+hls: yes
+hlsAddress: :8888
+hlsAlwaysRemux: yes
+hlsSegmentDuration: 2s
+hlsPartDuration: 200ms
+hlsSegmentMaxSize: 50M
+
+# MediaMTX management API (mediamtx-sync.py uses this)
+api: yes
+apiAddress: :9997
+
+# Metrics
+metrics: yes
+metricsAddress: :9998
+
+# Default path config inherited by all camera paths
+pathDefaults:
+  sourceProtocol: udp
+  sourceOnDemand: no
+  # runOnDisconnect: ""
+
+# Paths populated dynamically by ffmpeg publishers (stream_manager.py).
+# MediaMTX does NOT auto-create paths on publish/read by default — without
+# an explicit entry (or this wildcard), it rejects ANY path name that isn't
+# pre-configured, on both the publish side (ffmpeg's ANNOUNCE) and the read
+# side (browser WebRTC/HLS/RTSP requests), logging "path 'X' is not
+# configured" either way. This wildcard is what lets ffmpeg push to
+# cam_<id> without each camera needing its own static entry.
+paths:
+  all_others:

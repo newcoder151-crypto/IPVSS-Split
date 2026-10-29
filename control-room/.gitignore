@@ -1,0 +1,122 @@
+# ============================================================================
+# ipvss - root .gitignore  (place next to start.sh)
+# Keeps out: secrets, generated data, footage/recordings, AI model weights,
+# virtual environments, node_modules, logs, build output and downloaded binaries.
+# Never ignored: source, package.json / package-lock.json, *.example files.
+# ============================================================================
+
+# ---- secrets & per-machine configuration (real values live only on the machine)
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+!.env.sample
+!**/.env.sample
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+
+# ---- the bridge's private identity / certificate and state (SECRET - never commit)
+bridge/state/
+bridge/.env.generated
+
+# ---- runtime data created by start.sh
+/data/
+/logs/
+**/logs/
+**/run/
+*.log
+*.pid
+*.pid.lock
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- footage, recordings, snapshots (large + evidence: never in git)
+/media/
+**/media/
+**/storage/
+**/recordings/
+**/hls/
+**/event_snaps/
+**/search_thumbs/
+**/captures/
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.ts.part
+*.m3u8
+
+# ---- AI model weights and ML artefacts (hundreds of MB each - ship separately)
+*.pt
+*.pth
+*.onnx
+*.engine
+*.safetensors
+*.weights
+mnvr/backend/ai/analytics/models/
+mnvr/backend/ai/models/
+
+# ---- dependencies and virtual environments
+node_modules/
+**/node_modules/
+.venv/
+**/.venv/
+venv/
+**/venv/
+env/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+
+# ---- build output and caches
+dist/
+build/
+.vite/
+.cache/
+.parcel-cache/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# ---- downloaded binaries (start.sh fetches MediaMTX itself)
+mnvr/backend/mediamtx/mediamtx
+mnvr/backend/mediamtx/mediamtx.exe
+*.tar.gz
+*.tgz
+
+# ---- local databases, dumps, backups, temp files
+*.db
+*.sqlite
+*.sqlite3
+*.sql.gz
+*.dump
+*.bak
+*.tmp
+temp/
+tmp/
+
+# ---- test output
+test-results/
+playwright-report/
+RPF_CMS/CMS/test/browser/shots/
+
+# ---- packaged deliverables
+*.zip
+
+# ---- editor / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

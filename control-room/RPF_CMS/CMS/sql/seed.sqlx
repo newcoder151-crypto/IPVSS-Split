@@ -1,0 +1,18 @@
+-- Minimal seed data so the app has something to boot against.
+-- Replace the placeholder password hash before using this anywhere real.
+
+INSERT INTO zone (name) VALUES ('Zone 1')
+    ON CONFLICT (name) DO NOTHING;
+
+-- password_hash below is a placeholder, NOT a usable credential.
+-- Generate a real bcrypt/argon2 hash and replace this before first login.
+INSERT INTO users (zone_id, post_id, role, username, password_hash, status)
+VALUES (NULL, NULL, 'super_admin', 'admin', '$2a$12$ygu5fbVyiWrPvBVAHvpq4.xtfwFUp8o6j7SQuI3oG0SlQtJqSC0ti', 'active')
+    ON CONFLICT (username) DO NOTHING;
+
+-- System account used as incident.raised_by for automatically-dispatched
+-- (high-priority) incidents, where no human operator made the call.
+-- Not a real login: password_hash is intentionally unusable.
+INSERT INTO users (zone_id, post_id, role, username, password_hash, status)
+VALUES (NULL, NULL, 'super_admin', 'system', '$2a$12$/d9eNhmaAK1LIKyH5/uFWODkSOr7UKCLr.BogR3jgj.d0bQvyvPTi', 'active')
+    ON CONFLICT (username) DO NOTHING;

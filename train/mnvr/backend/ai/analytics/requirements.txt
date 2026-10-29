@@ -1,0 +1,22 @@
+# Analytics worker — its own venv (backend/ai/analytics/.venv), CPU-only.
+#
+# Why separate from backend/ai/requirements.txt: that file pins
+# ultralytics==8.3.55, which predates YOLO26 (its cfg/models has no "26"
+# architecture), so it cannot load yolo26*.pt weights. Upgrading it in place
+# would put the sidecar (YOLOv8 + CLIP) at risk. Keep them apart.
+#
+# NOTE: this combination was NOT install-tested here (the PyTorch CPU wheel
+# index was not reachable from the build sandbox). Install it once on the
+# target machine and run tests/test_analytics.py before trusting it.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
+
+ultralytics==8.4.175
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+requests==2.32.3
+# Needed by ByteTrack (model.track). Ultralytics tries to pip-install it at runtime, but skips that
+# when it believes the machine is offline, and then every frame fails with "No module named 'lap'".
+# Verified: prebuilt cp312 wheel, works with numpy 1.26.4.
+lap==0.5.12

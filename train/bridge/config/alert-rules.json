@@ -1,0 +1,124 @@
+{
+  "_comment": "Maps M-NVR events to CMS alerts. First matching rule wins. 'match' is a case-insensitive regex tested against event_type, event_subtype and title. Priority is 1-10; CMS auto-dispatches (with an incident) at its threshold, default 7. An event may also carry its own 'priority' / 'alert_type' / 'cms_forward' inside event_data (JSON) - that overrides these rules.",
+  "rules": [
+    {
+      "match": "\\[SHADOW\\]",
+      "forward": false,
+      "_comment": "analytics shadow mode: logged on the M-NVR only, never sent as a real alert"
+    },
+    {
+      "match": "^AI_TEST$|AI_TEST",
+      "forward": false
+    },
+    {
+      "match": "PASSENGER_?FALLEN|FALLEN",
+      "alert_type": "passenger_fallen",
+      "priority": 9
+    },
+    {
+      "match": "LEANING_?OUT",
+      "alert_type": "passenger_leaning_out",
+      "priority": 9
+    },
+    {
+      "match": "TRACK_?OBSTACLE",
+      "alert_type": "track_obstacle",
+      "priority": 9
+    },
+    {
+      "match": "TRACK_?NOT_?VISIBLE",
+      "alert_type": "camera_blocked",
+      "priority": 2,
+      "_comment": "the rail-obstacle analyzer cannot see the track (dirty / blocked / dark camera): a camera-health notice, not an emergency"
+    },
+    {
+      "match": "PANIC",
+      "alert_type": "panic_button",
+      "priority": 9
+    },
+    {
+      "match": "ETBU|EMERGENCY_?ALARM|ALARM_?CHAIN",
+      "alert_type": "emergency_alarm",
+      "priority": 9
+    },
+    {
+      "match": "FIRE|FLAME",
+      "alert_type": "fire",
+      "priority": 9
+    },
+    {
+      "match": "SMOKE",
+      "alert_type": "smoke",
+      "priority": 8
+    },
+    {
+      "match": "WEAPON|FIREARM|KNIFE",
+      "alert_type": "weapon",
+      "priority": 10
+    },
+    {
+      "match": "INTRUS|TRESPASS",
+      "alert_type": "intrusion",
+      "priority": 8
+    },
+    {
+      "match": "TAMPER",
+      "alert_type": "tamper",
+      "priority": 8
+    },
+    {
+      "match": "UNATTENDED|ABANDONED",
+      "alert_type": "unattended_bag",
+      "priority": 7
+    },
+    {
+      "match": "FIGHT|ASSAULT|VIOLENCE",
+      "alert_type": "violence",
+      "priority": 8
+    },
+    {
+      "match": "CROWD",
+      "alert_type": "crowding",
+      "priority": 4
+    },
+    {
+      "match": "LOITER",
+      "alert_type": "loitering",
+      "priority": 3
+    },
+    {
+      "match": "ANIMAL|CATTLE|COW",
+      "alert_type": "animal_detected",
+      "priority": 4
+    },
+    {
+      "match": "HUMAN|PERSON|PEDESTRIAN",
+      "alert_type": "human_detected",
+      "priority": 3
+    },
+    {
+      "match": "OBJECT|OBSTRUCT|DEBRIS",
+      "alert_type": "object_detected",
+      "priority": 4
+    },
+    {
+      "match": "CAMERA_?BLOCK|VIEW_?OBSTRUCT",
+      "alert_type": "camera_blocked",
+      "priority": 2
+    },
+    {
+      "match": "RECORDING_?FAIL|CAMERA_?OFFLINE|STORAGE|SYSTEM|HEALTH|LOGIN|CONFIG",
+      "forward": false
+    }
+  ],
+  "default": {
+    "min_severity": "WARNING",
+    "severity_priority": {
+      "INFO": 1,
+      "WARNING": 3,
+      "ERROR": 5,
+      "CRITICAL": 8,
+      "EMERGENCY": 9
+    }
+  }
+}

@@ -1,0 +1,63 @@
+nano .gitignore
+frontend/node_modules/
+
+# Dependencies
+backend/api/node_modules/
+frontend/node_modules/
+
+# Frontend environment
+frontend/.env
+
+# Logs
+logs/
+
+# Python virtual environment
+backend/ai/.venv/
+
+# Python cache
+backend/ai/__pycache__/
+**/__pycache__/
+*.pyc
+
+# AI model
+backend/ai/yolov8n.pt
+
+# Backend environment
+backend/api/.env
+
+# Frontend environment
+frontend/.env
+
+# Node dependencies
+backend/api/node_modules/
+frontend/node_modules/
+
+# Logs
+logs/
+
+# Python virtual environments
+**/.venv/
+**/venv/
+
+# Node dependencies
+**/node_modules/
+
+# Python cache
+**/__pycache__/
+*.pyc
+
+# MediaMTX binary
+backend/mediamtx/mediamtx
+
+# Logs
+logs/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Large AI/model files
+*.pt
+*.pth
+*.onnx

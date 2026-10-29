@@ -1,0 +1,27 @@
+# ── PyTorch — CPU-only build, on purpose ─────────────────────────────────────
+# A plain `pip install torch` on Linux pulls the CUDA-bundled wheel, which
+# drags in a dozen separate NVIDIA library packages as transitive
+# dependencies (nvidia-cublas-cu12, nvidia-cudnn-cu12, cuda_pathfinder, ...)
+# — each one large, and on a slow/flaky connection that's a lot of surface
+# area for a single timeout to blow up the whole install (exactly what
+# "ReadTimeoutError .../cuda_pathfinder-....whl" further down in this repo's
+# history was). Pinning the explicit +cpu build below skips all of that
+# entirely — smaller, faster, and far less likely to fail partway through.
+#
+# If you have a GPU and want it used, see the override instructions in
+# SMART_SEARCH_NOTES.md — do that AFTER a normal CPU install succeeds once,
+# on a day your connection is behaving.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
+
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.20
+ultralytics==8.3.55
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+onnxruntime==1.20.1
+pillow==11.0.0
+open_clip_torch==2.29.0
+requests==2.32.3

@@ -1,0 +1,29 @@
+{
+  "flag_id": 6,
+  "saved_at": "2026-10-24T09:17:46.790Z",
+  "file": "flag-6.mp4",
+  "sha256": "5126a690353f5a224f2609d0e918cded1d86a620ab6e0cb5da233e94be3e7475",
+  "size_bytes": 433134,
+  "post_id": 7,
+  "post_name": "RPF Post Bangalore",
+  "footage_id": 10,
+  "request_id": 12,
+  "incident_id": null,
+  "camera": "Back Entrance",
+  "nvr": "Coach-A NVR",
+  "train_no": null,
+  "footage_start": "2026-10-24T09:01:53.000Z",
+  "section_start_s": 28,
+  "section_end_s": 29,
+  "section_from": "2026-10-24T09:02:21.000Z",
+  "section_to": "2026-10-24T09:02:22.000Z",
+  "entered": {
+    "retention": "permanent",
+    "retain_until": null,
+    "storage": "local",
+    "justification": "copy",
+    "flagged_by": "nishchal.giri",
+    "flagged_at": "2026-10-24T09:17:46.782Z"
+  },
+  "source_footage_sha256": "1b0f4c30f0b85fd73c1e82c377c5195b807dc2c7ecacb701cea4e07980ba0a6c"
+}

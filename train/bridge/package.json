@@ -1,0 +1,15 @@
+{
+  "name": "mnvr-cms-bridge",
+  "version": "1.0.0",
+  "description": "Train-side agent: connects the M-NVR to the CMS (heartbeat + GPS, alerts, footage-on-request). Does not modify M-NVR, CMS or RPF code.",
+  "main": "src/index.js",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": { "node": ">=18.17" },
+  "scripts": {
+    "start": "node src/index.js",
+    "provision": "node scripts/provision.js",
+    "test": "node test/unit.js"
+  },
+  "dependencies": { "pg": "^8.11.0" }
+}

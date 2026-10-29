@@ -1,0 +1,29 @@
+{
+  "flag_id": 8,
+  "saved_at": "2026-10-26T03:36:29.916Z",
+  "file": "flag-8.mp4",
+  "sha256": "7764b69421d7ee2d24485a46769f947703fa80400c6d00ca8d92caf798e3b475",
+  "size_bytes": 552309,
+  "post_id": 6,
+  "post_name": "RPF Post Haridwar",
+  "footage_id": 11,
+  "request_id": 13,
+  "incident_id": null,
+  "camera": "Back Entrance",
+  "nvr": "Coach-A NVR",
+  "train_no": null,
+  "footage_start": "2026-10-26T03:33:57.000Z",
+  "section_start_s": 35,
+  "section_end_s": 38,
+  "section_from": "2026-10-26T03:34:32.000Z",
+  "section_to": "2026-10-26T03:34:35.000Z",
+  "entered": {
+    "retention": "permanent",
+    "retain_until": null,
+    "storage": "local",
+    "justification": "need",
+    "flagged_by": "anshika.sharma",
+    "flagged_at": "2026-10-26T03:36:29.905Z"
+  },
+  "source_footage_sha256": "735c608b274f7eb423d8059f6e399391cda1db435e3e918b915993a172f96ef9"
+}

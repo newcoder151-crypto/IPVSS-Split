@@ -1,0 +1,29 @@
+{
+  "flag_id": 2,
+  "saved_at": "2026-10-13T03:44:29.338Z",
+  "file": "flag-2.mp4",
+  "sha256": "577025951a6029b816ab91a9bd8af220d49f4008e7a3e8519cbf6c01ed9b1e2f",
+  "size_bytes": 1355804,
+  "post_id": 1,
+  "post_name": "Post A",
+  "footage_id": 4,
+  "request_id": 5,
+  "incident_id": null,
+  "camera": "Back Entrance",
+  "nvr": "Coach-A NVR",
+  "train_no": null,
+  "footage_start": "2026-10-13T03:40:34.000Z",
+  "section_start_s": 3,
+  "section_end_s": 11,
+  "section_from": "2026-10-13T03:40:37.000Z",
+  "section_to": "2026-10-13T03:40:45.000Z",
+  "entered": {
+    "retention": "permanent",
+    "retain_until": null,
+    "storage": "both",
+    "justification": "do the same",
+    "flagged_by": "admin",
+    "flagged_at": "2026-10-13T03:44:29.329Z"
+  },
+  "source_footage_sha256": "a319f46681d6b5e8b411c49f3d60a9a545b3001da2534750b50be83f9478e632"
+}

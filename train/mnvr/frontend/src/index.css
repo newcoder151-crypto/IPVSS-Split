@@ -1,0 +1,198 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 215 25% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 215 25% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 25% 12%;
+
+    --primary: 216 100% 27%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 25% 93%;
+    --secondary-foreground: 215 25% 12%;
+
+    --muted: 210 20% 95%;
+    --muted-foreground: 215 15% 47%;
+
+    --accent: 210 30% 90%;
+    --accent-foreground: 216 100% 27%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 20% 88%;
+    --input: 214 20% 88%;
+    --ring: 216 100% 27%;
+
+    --radius: 0.5rem;
+
+    --sidebar-background: 216 100% 15%;
+    --sidebar-foreground: 210 20% 90%;
+    --sidebar-primary: 210 100% 60%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 216 80% 22%;
+    --sidebar-accent-foreground: 210 20% 95%;
+    --sidebar-border: 216 60% 25%;
+    --sidebar-ring: 210 100% 60%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+    --info: 199 89% 48%;
+    --info-foreground: 0 0% 100%;
+
+    --railway-blue: 216 100% 27%;
+    --railway-dark: 216 100% 15%;
+    --railway-gold: 43 96% 56%;
+    --railway-orange: 25 95% 53%;
+
+    --ai-glow: 210 100% 60%;
+    --ai-surface: 210 80% 96%;
+  }
+
+  .dark {
+    --background: 220 20% 8%;
+    --foreground: 210 20% 92%;
+
+    --card: 220 18% 12%;
+    --card-foreground: 210 20% 92%;
+
+    --popover: 220 18% 12%;
+    --popover-foreground: 210 20% 92%;
+
+    --primary: 210 100% 55%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 15% 18%;
+    --secondary-foreground: 210 20% 90%;
+
+    --muted: 220 15% 16%;
+    --muted-foreground: 215 15% 55%;
+
+    --accent: 220 20% 20%;
+    --accent-foreground: 210 100% 65%;
+
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 15% 20%;
+    --input: 220 15% 20%;
+    --ring: 210 100% 55%;
+
+    --sidebar-background: 220 25% 6%;
+    --sidebar-foreground: 210 20% 85%;
+    --sidebar-primary: 210 100% 60%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 20% 14%;
+    --sidebar-accent-foreground: 210 20% 90%;
+    --sidebar-border: 220 15% 15%;
+    --sidebar-ring: 210 100% 60%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+    --info: 199 89% 48%;
+    --info-foreground: 0 0% 100%;
+
+    --railway-blue: 210 100% 55%;
+    --railway-dark: 220 25% 6%;
+    --railway-gold: 43 96% 56%;
+    --railway-orange: 25 95% 53%;
+
+    --ai-glow: 210 100% 60%;
+    --ai-surface: 220 20% 14%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-muted/30;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-muted-foreground/20 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/40;
+  }
+}
+
+@layer components {
+  .ai-badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full;
+    background: hsl(var(--ai-surface));
+    color: hsl(var(--ai-glow));
+    border: 1px solid hsl(var(--ai-glow) / 0.3);
+  }
+
+  .ai-badge-glow {
+    box-shadow: 0 0 8px hsl(var(--ai-glow) / 0.3);
+  }
+
+  .camera-tile {
+    @apply relative rounded-lg overflow-hidden bg-card border border-border;
+    aspect-ratio: 16 / 9;
+  }
+
+  .camera-tile-overlay {
+    @apply absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent;
+  }
+
+  .status-dot {
+    @apply w-2 h-2 rounded-full inline-block;
+  }
+
+  .status-dot-green {
+    @apply bg-green-500;
+    box-shadow: 0 0 6px hsl(142 71% 45% / 0.5);
+  }
+
+  .status-dot-yellow {
+    @apply bg-yellow-500;
+    box-shadow: 0 0 6px hsl(38 92% 50% / 0.5);
+  }
+
+  .status-dot-red {
+    @apply bg-red-500;
+    box-shadow: 0 0 6px hsl(0 72% 51% / 0.5);
+  }
+
+  .glass-panel {
+    @apply backdrop-blur-md bg-card/80 border border-border/50;
+  }
+
+  .railway-gradient {
+    background: linear-gradient(135deg, hsl(var(--railway-blue)), hsl(var(--railway-dark)));
+  }
+}
+
+@layer utilities {
+  .animate-pulse-slow {
+    animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+}
