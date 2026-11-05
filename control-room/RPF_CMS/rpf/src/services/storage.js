@@ -38,7 +38,8 @@ function cmsMediaRoot() {
   return new Promise((resolve) => {
     if (Date.now() - cmsRootCache.at < 30000) return resolve(cmsRootCache.dir);
     const done = (dir) => { cmsRootCache = { at: Date.now(), dir }; resolve(dir); };
-    const req = http.get({ host: '127.0.0.1', port: Number(process.env.CMS_PORT) || 7080, path: '/health', timeout: 1500 }, (res) => {
+    if (!process.env.CMS_HOST || !process.env.CMS_PORT) return done(null);   // set by start.sh from config/control-room.conf
+    const req = http.get({ host: process.env.CMS_HOST, port: Number(process.env.CMS_PORT), path: '/health', timeout: 1500 }, (res) => {
       let b = ''; res.on('data', (d) => { b += d; });
       res.on('end', () => { try { done(JSON.parse(b).media_root || null); } catch (_) { done(null); } });
     });

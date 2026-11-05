@@ -182,21 +182,24 @@ async function until(fn, ms = 20000, step = 150) { const t0 = Date.now(); for (;
   process.on('exit', () => sim.kill());
   await sleep(2500);
   const now = Date.now();
-  const rq = await rA(`/incidents/${man.data.id}/requests`, { method: 'POST', body: { window_start: new Date(now - 5 * 60000).toISOString(), window_end: new Date(now - 2 * 60000).toISOString(), reason: 'bag theft' } });
+  const rq = await rA('/train-requests', { method: 'POST', body: { train_no: '12301 Rajdhani', incident_id: man.data.id, window_start: new Date(now - 5 * 60000).toISOString(), window_end: new Date(now - 2 * 60000).toISOString(), reason: 'bag theft' } });
   ok(rq.status === 201, `request #${rq.data.id} submitted for the incident`);
   const sub = (await op(`/requests?tab=decide`)).data.rows.find((r) => r.id === rq.data.id);
   ok(sub && sub.incident_id === man.data.id, 'it appears in the operator "needs decision" tab, linked to the incident');
   const tA = Date.now();
   const ap = await op(`/requests/${rq.data.id}/approve`, { method: 'POST', body: { note: 'approved' } });
   ok(ap.status === 200 && ['awaiting_upload', 'fulfilled'].includes(ap.data.status), `operator approves -> '${ap.data.status}' (footage is on the train, CMS commands the NVR)`);
-  const done = await until(async () => (await rA(`/requests/${rq.data.id}`)).data.request.status === 'fulfilled', 60000, 200);
+  const done = await until(async () => (await rA(`/train-requests/${rq.data.id}`)).data.request.status === 'fulfilled', 60000, 200);
   ok(done.v, `NVR uploaded, CMS stitched and delivered in ${((Date.now() - tA) / 1000).toFixed(1)} s`);
-  const rqD = (await rA(`/requests/${rq.data.id}`)).data; const f = rqD.footage[0];
+  const rqD = (await rA(`/train-requests/${rq.data.id}`)).data; const f = rqD.footage[0];
   ok(f && f.duration_s > 170 && f.duration_s < 190, `delivered file is a single stitched clip, ${f && Math.round(f.duration_s)} s (asked for 180 s)`);
-  const absf = path.join(MEDIA, 'zone-1', `req-${rq.data.id}.mp4`);
-  ok(fs.existsSync(absf) && crypto.createHash('sha256').update(fs.readFileSync(absf)).digest('hex') === f.sha256, 'sha256 of the stored file matches the recorded hash');
+  // delivered files are named <TRAIN>_M<nn>_C<nn>_<start>_<end>.mp4 under zone-<z>/train-<TRAIN>/REQ<id>|TR<id>/  (CMS/backend/src/services/naming.js)
+  const findFile = (dir, name) => { for (const e of fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }) : []) { const p = path.join(dir, e.name); const r = e.isDirectory() ? findFile(p, name) : (e.name === name ? p : null); if (r) return r; } return null; };
+  const absf = f && findFile(path.join(MEDIA, 'zone-1'), f.file_name);
+  ok(f && /^[A-Z0-9-]+_M\d{2}_C\d{2}_\d{8}T\d{6}Z_\d{8}T\d{6}Z\.mp4$/.test(f.file_name), `file name follows the convention <TRAIN>_M<nn>_C<nn>_<start>_<end>.mp4 (${f && f.file_name})`);
+  ok(absf && fs.existsSync(absf) && crypto.createHash('sha256').update(fs.readFileSync(absf)).digest('hex') === f.sha256, 'sha256 of the stored file matches the recorded hash');
   const notes = (await rA('/notifications')).data;
-  ok(notes.some((n) => n.kind === 'footage' && n.ref_id === f.id), 'post got a "footage ready" notification');
+  ok(notes.some((n) => n.kind === 'footage' && n.ref_entity === 'train_request' && n.ref_id === rq.data.id), 'post got ONE "footage ready" notification for the whole train request');
 
   // --- 5. view, section download, flag section for life
   console.log('view / section download / flag');
@@ -270,7 +273,7 @@ async function until(fn, ms = 20000, step = 150) { const t0 = Date.now(); for (;
 
   // --- 8. close incident
   ok((await rA(`/incidents/${man.data.id}/status`, { method: 'PATCH', body: { status: 'closed', note: 'resolved' } })).status === 200, 'officer closes the incident');
-  ok((await rA(`/incidents/${man.data.id}/requests`, { method: 'POST', body: {} })).status === 409, 'no footage can be requested for a closed incident');
+  ok((await rA('/train-requests', { method: 'POST', body: { train_no: '12301 Rajdhani', incident_id: man.data.id, reason: 'x', window_start: new Date(now - 5 * 60000).toISOString(), window_end: new Date(now - 2 * 60000).toISOString() } })).status === 409, 'no footage can be requested for a closed incident');
   ok((await op(`/incidents/${man.data.id}/reopen`, { method: 'POST', body: { reason: 'new evidence' } })).status === 200, 'CMS can reopen it');
 
   await setLow('auto_deliver');   // leave the default in place

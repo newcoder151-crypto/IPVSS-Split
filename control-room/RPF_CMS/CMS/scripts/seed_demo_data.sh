@@ -13,15 +13,22 @@
 
 set -euo pipefail
 
-BACKEND_URL="${BACKEND_URL:-http://localhost:7080}"
+# Hosts, ports and database names come from control-room/config/control-room.conf (IPVSS_CONFIG=<file> to use another); the database
+# password from DB_PASSWORD (environment) - nothing is hard-coded in this script.
+CFG="${IPVSS_CONFIG:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/config/control-room.conf}"
+[[ -r "$CFG" ]] || { echo "config file not found: $CFG" >&2; exit 1; }
+cfg() { grep -E "^$1=" "$CFG" | tail -n1 | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//'; }
+BACKEND_URL="${BACKEND_URL:-http://$(cfg LOOPBACK_HOST):$(cfg CMS_PORT)}"
+DB_HOST="${DB_HOST:-$(cfg DB_HOST)}"; DB_PORT="${DB_PORT:-$(cfg DB_PORT)}"; DB_NAME="${DB_NAME:-$(cfg DB_NAME)}"; DB_USER="${DB_USER:-$(cfg DB_USER)}"
+: "${DB_PASSWORD:?set DB_PASSWORD (the CMS database password)}"
 
 log() { echo "[seed_demo_data] $*"; }
 
 nvr_id() {
   # Looks up an nvr_unit's id by name directly from Postgres, since the
   # API doesn't expose a registry lookup endpoint yet.
-  PGPASSWORD="${DB_PASSWORD:-cms}" psql -h "${DB_HOST:-localhost}" -p "${DB_PORT:-5432}" \
-    -U "${DB_USER:-cms}" -d "${DB_NAME:-cms}" -tAc \
+  PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" \
+    -U "$DB_USER" -d "$DB_NAME" -tAc \
     "SELECT id FROM nvr_unit WHERE name = '$1';"
 }
 

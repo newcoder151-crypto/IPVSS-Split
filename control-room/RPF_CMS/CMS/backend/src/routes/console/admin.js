@@ -66,20 +66,27 @@ router.patch('/posts/:id', requireAdmin, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/**
+ * POST /nvrs { name, train_no?, zone_id? } - announce an M-NVR. That is all: no certificate and no camera count.
+ * The unit's bridge claims the row by NAME the first time it connects (it supplies its own certificate fingerprint) and then sends the
+ * cameras it reads straight from the M-NVR. Until then the row holds a random placeholder nobody can authenticate with.
+ * { cert_fingerprint } may still be given to pre-register a certificate you already have.
+ */
 router.post('/nvrs', requireAdmin, wrap(async (req, res) => {
   const b = req.body || {};
   const zoneId = req.user.role === 'super_admin' ? parseId(b.zone_id, 'zone_id') : req.user.zone_id;
-  const fp = requireText(b.cert_fingerprint, 'cert_fingerprint', 200);
-  const cams = Math.min(16, Math.max(0, Number(b.cameras) || 0));
+  const name = requireText(b.name, 'name', 80);
+  const given = optText(b.cert_fingerprint, 200);
+  const fp = given || `pending-${require('crypto').randomBytes(16).toString('hex')}`;
   const id = await withTransaction(async (client) => {
+    if ((await client.query('SELECT 1 FROM nvr_unit WHERE lower(name) = lower($1)', [name])).rowCount) throw conflict(`an M-NVR named '${name}' is already registered`);
     const { rows } = await client.query(`INSERT INTO nvr_unit (name, cert_fingerprint, current_zone_id, train_no) VALUES ($1,$2,$3,$4) RETURNING id`,
-      [requireText(b.name, 'name', 80), fp, zoneId, optText(b.train_no, 40)]).catch((e) => { if (e.code === '23505') throw conflict('that certificate fingerprint is already registered'); throw e; });
+      [name, fp, zoneId, optText(b.train_no, 40)]).catch((e) => { if (e.code === '23505') throw conflict('that certificate fingerprint is already registered'); throw e; });
     await client.query(`INSERT INTO nvr_zone_assignment (nvr_id, zone_id, assigned_from) VALUES ($1,$2,now())`, [rows[0].id, zoneId]);
-    for (let i = 1; i <= cams; i++) await client.query(`INSERT INTO camera (nvr_id, name) VALUES ($1,$2)`, [rows[0].id, `cam-${i}`]);
-    await audit(client, { user: req.user, action: 'nvr.create', entity: 'nvr_unit', entityId: rows[0].id, zoneId, details: { name: b.name, cameras: cams } });
+    await audit(client, { user: req.user, action: 'nvr.create', entity: 'nvr_unit', entityId: rows[0].id, zoneId, details: { name, train_no: b.train_no || null, awaiting_first_connect: !given } });
     return rows[0].id;
   });
-  res.status(201).json({ id });
+  res.status(201).json({ id, awaiting_first_connect: !given });
 }));
 router.patch('/nvrs/:id', requireAdmin, wrap(async (req, res) => {
   const id = parseId(req.params.id); const b = req.body || {};
@@ -90,8 +97,11 @@ router.patch('/nvrs/:id', requireAdmin, wrap(async (req, res) => {
   if (b.name != null) add('name = ?', requireText(b.name, 'name', 80));
   if (b.train_no !== undefined) add('train_no = ?', optText(b.train_no, 40));
   if (b.status != null) { if (!['active', 'inactive', 'suspended'].includes(b.status)) throw badRequest('invalid status'); add('status = ?::nvr_status', b.status); }
+  // M-NVR number inside its train (the "M<nn>" of every file name). Normally assigned automatically.
+  if (b.unit_no != null) { const u = Number(b.unit_no); if (!Number.isInteger(u) || u < 1 || u > 99) throw badRequest('unit_no must be a whole number from 1 to 99'); add('unit_no = ?', u); }
   if (!sets.length) throw badRequest('nothing to change');
-  await pool.query(`UPDATE nvr_unit SET ${sets.join(', ')} WHERE id = $1`, params);
+  await pool.query(`UPDATE nvr_unit SET ${sets.join(', ')} WHERE id = $1`, params)
+    .catch((e) => { if (e.code === '23505') throw conflict('another M-NVR of that train already has this number'); throw e; });
   await audit(null, { user: req.user, action: 'nvr.update', entity: 'nvr_unit', entityId: id, zoneId: rows[0].current_zone_id, details: b });
   res.json({ ok: true });
 }));
@@ -126,8 +136,11 @@ router.patch('/cameras/:id', requireAdmin, wrap(async (req, res) => {
   if (b.name != null) add('name = ?', requireText(b.name, 'name', 60));
   if (b.mount_position !== undefined) add('mount_position = ?', optText(b.mount_position, 80));
   if (b.active != null) add('active = ?', !!b.active);
+  // camera number inside its M-NVR (the "C<nn>" of every file name). Normally assigned automatically.
+  if (b.camera_no != null) { const c = Number(b.camera_no); if (!Number.isInteger(c) || c < 1 || c > 999) throw badRequest('camera_no must be a whole number from 1 to 999'); add('mnvr_camera_id = ?', c); }
   if (!sets.length) throw badRequest('nothing to change');
-  await pool.query(`UPDATE camera SET ${sets.join(', ')} WHERE id = $1`, params);
+  await pool.query(`UPDATE camera SET ${sets.join(', ')} WHERE id = $1`, params)
+    .catch((e) => { if (e.code === '23505') throw conflict('another camera of that M-NVR already has this number'); throw e; });
   await audit(null, { user: req.user, action: 'camera.update', entity: 'camera', entityId: id, zoneId: rows[0].current_zone_id, details: b });
   res.json({ ok: true });
 }));

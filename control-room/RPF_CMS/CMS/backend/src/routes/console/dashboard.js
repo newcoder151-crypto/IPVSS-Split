@@ -52,7 +52,18 @@ router.get('/dashboard', wrap(async (req, res) => {
             COUNT(*) FILTER (WHERE r.status = 'fulfilled' AND r.fulfilled_at > now() - interval '24 hours') AS fulfilled_24h,
             COUNT(*) FILTER (WHERE r.status IN ('failed','expired') AND r.created_at > now() - interval '7 days') AS failed_7d,
             EXTRACT(EPOCH FROM now() - MIN(r.created_at) FILTER (WHERE r.status = 'submitted')) AS oldest_s
-       FROM video_request r JOIN rpf_post po ON po.id = r.post_id WHERE ${z('po.zone_id', p)}`, p);
+       FROM video_request r JOIN rpf_post po ON po.id = r.post_id WHERE r.train_request_id IS NULL AND ${z('po.zone_id', p)}`, p);
+  // requests by train number count once per request (their per-camera requests are not counted again)
+  p = [];
+  const trq = await one(
+    `SELECT COUNT(*) FILTER (WHERE t.status = 'submitted') AS needs_decision,
+            COUNT(*) FILTER (WHERE t.status IN ('approved','awaiting_upload')) AS awaiting_upload,
+            COUNT(*) FILTER (WHERE t.status IN ('fulfilled','partial') AND t.fulfilled_at > now() - interval '24 hours') AS fulfilled_24h,
+            COUNT(*) FILTER (WHERE t.status IN ('failed','expired') AND t.created_at > now() - interval '7 days') AS failed_7d,
+            EXTRACT(EPOCH FROM now() - MIN(t.created_at) FILTER (WHERE t.status = 'submitted')) AS oldest_s
+       FROM train_request t JOIN rpf_post po ON po.id = t.post_id WHERE ${z('po.zone_id', p)}`, p);
+  for (const k of ['needs_decision', 'awaiting_upload', 'fulfilled_24h', 'failed_7d']) requests[k] = +requests[k] + +trq[k];
+  if (trq.oldest_s != null && (requests.oldest_s == null || +trq.oldest_s > +requests.oldest_s)) requests.oldest_s = trq.oldest_s;
 
   p = [];
   const incidents = await one(
@@ -107,7 +118,10 @@ router.get('/counts', wrap(async (req, res) => {
     (SELECT COUNT(DISTINCT d.alert_id) FROM alert_delivery d JOIN alert a2 ON a2.id = d.alert_id AND a2.event_time = d.alert_event_time JOIN rpf_post po ON po.id = d.post_id WHERE d.ack_at IS NULL AND a2.status IN ('routed','escalated') AND ${zoneScope(req.user, 'po.zone_id', p, req.query.zone_id)}) AS unacked
     FROM alert a WHERE a.event_time > now() - interval '30 days' AND ${zoneScope(req.user, 'a.zone_id', p, req.query.zone_id)}`, p)).rows[0];
   p = [];
-  const r = (await pool.query(`SELECT COUNT(*) FILTER (WHERE r.status = 'submitted') AS decide, COUNT(*) FILTER (WHERE r.status = 'awaiting_upload') AS waiting FROM video_request r JOIN rpf_post po ON po.id = r.post_id WHERE ${zoneScope(req.user, 'po.zone_id', p, req.query.zone_id)}`, p)).rows[0];
+  const r = (await pool.query(`SELECT COUNT(*) FILTER (WHERE r.status = 'submitted') AS decide, COUNT(*) FILTER (WHERE r.status = 'awaiting_upload') AS waiting FROM video_request r JOIN rpf_post po ON po.id = r.post_id WHERE r.train_request_id IS NULL AND ${zoneScope(req.user, 'po.zone_id', p, req.query.zone_id)}`, p)).rows[0];
+  p = [];
+  const t = (await pool.query(`SELECT COUNT(*) FILTER (WHERE t.status = 'submitted') AS decide, COUNT(*) FILTER (WHERE t.status IN ('approved','awaiting_upload')) AS waiting FROM train_request t JOIN rpf_post po ON po.id = t.post_id WHERE ${zoneScope(req.user, 'po.zone_id', p, req.query.zone_id)}`, p)).rows[0];
+  r.decide = +r.decide + +t.decide; r.waiting = +r.waiting + +t.waiting;
   p = [];
   const e = (await pool.query(`SELECT COUNT(*) AS failed FROM evidence_flag e JOIN delivered_footage f ON f.id = e.footage_id JOIN video_request r ON r.id = f.video_request_id JOIN rpf_post po ON po.id = r.post_id WHERE e.archive_status = 'failed' AND e.status = 'active' AND ${zoneScope(req.user, 'po.zone_id', p, req.query.zone_id)}`, p)).rows[0];
   res.json({ queue: +a.queue, escalated: +a.escalated, unacked: +a.unacked, decide: +r.decide, waiting: +r.waiting, archive_failed: +e.failed });

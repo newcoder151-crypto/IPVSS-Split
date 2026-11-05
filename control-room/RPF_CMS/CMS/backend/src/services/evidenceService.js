@@ -13,7 +13,7 @@ const FLAG_SELECT = `
          e.archive_status, e.archive_path, e.archive_sha256, e.archive_size_bytes, e.archived_at, e.archive_error,
          e.released_at, e.release_note, e.storage, e.local_sha256, e.local_size_bytes, e.local_saved_at, e.local_error, (e.local_path IS NOT NULL) AS has_local, e.local_path, uf.username AS flagged_by_username, ur.username AS released_by_username,
          f.format, f.file_size_bytes, f.duration_s, r.id AS request_id, r.window_start, r.window_end,
-         p.id AS post_id, p.name AS post_name, p.zone_id, c.id AS camera_id, c.name AS camera_name, n.name AS nvr_name
+         p.id AS post_id, p.name AS post_name, p.zone_id, c.id AS camera_id, c.name AS camera_name, n.name AS nvr_name, COALESCE(f.train_no, n.train_no) AS train_no, COALESCE(f.unit_no, n.unit_no, n.id) AS unit_no, COALESCE(f.camera_no, c.mnvr_camera_id, c.id) AS camera_no, f.start_time AS footage_start, f.train_request_id
     FROM evidence_flag e
     JOIN users uf ON uf.id = e.flagged_by
     LEFT JOIN users ur ON ur.id = e.released_by

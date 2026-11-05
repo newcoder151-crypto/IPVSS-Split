@@ -4,16 +4,22 @@ const settings = require('./settings');
 const notify = require('./notify');
 const { audit } = require('./audit');
 const { coverage } = require('./segmentService');
-const { stitch, probeDuration } = require('./footageService');
+const { stitch, probeDuration, cutClip } = require('./footageService');
 const { absPath, sha256File, exists } = require('./fsutil');
 const { canSeeZone } = require('../middleware/auth');
 const { getSystemUserId } = require('./alertService');
+const naming = require('./naming');
 const fs = require('fs');
+
+// A request that belongs to a train request (one camera of it) does not notify the post on its own: the train request
+// sends ONE notice for the whole train. (Lazy require: trainRequestService depends on this module.)
+const trainSvc = () => require('./trainRequestService');
+const refreshParent = (r) => (r && r.train_request_id ? trainSvc().refresh(r.train_request_id).catch((e) => console.error(`train request #${r.train_request_id}:`, e.message)) : null);
 
 const OPEN = ['approved', 'amended', 'awaiting_upload'];
 
 const REQUEST_SELECT = `
-  SELECT r.*, p.zone_id, p.name AS post_name, c.name AS camera_name, c.nvr_id, n.name AS nvr_name, n.train_no,
+  SELECT r.*, p.zone_id, p.name AS post_name, c.name AS camera_name, COALESCE(c.mnvr_camera_id, c.id) AS camera_no, c.nvr_id, n.name AS nvr_name, n.train_no, COALESCE(n.unit_no, n.id) AS unit_no,
          ur.username AS requested_by_username, uo.username AS operator_username,
          n.last_seen AS nvr_last_seen,
          (SELECT COUNT(*) FROM delivered_footage f WHERE f.video_request_id = r.id) AS footage_count
@@ -74,15 +80,15 @@ async function decide(user, id, action, { note, window_start, window_end } = {})
 // Commands to the NVR
 // ---------------------------------------------------------------------------------------------
 
-async function issueUploadCommand(client, { nvrId, cameraId, from, to, requestId = null, userId = null }) {
+async function issueUploadCommand(client, { nvrId, cameraId, from, to, requestId = null, userId = null, trainRequestId = null }) {
   const q = client || pool;
   const { rows: open } = await q.query(
     `SELECT id FROM nvr_command WHERE nvr_id = $1 AND kind = 'upload_now' AND camera_id = $2 AND status IN ('queued','sent','acked')
         AND window_start <= $3 AND window_end >= $4 AND request_id IS NOT DISTINCT FROM $5 LIMIT 1`, [nvrId, cameraId, from, to, requestId]);
   if (open.length) return open[0].id;
   const { rows } = await q.query(
-    `INSERT INTO nvr_command (nvr_id, kind, camera_id, window_start, window_end, request_id, created_by)
-     VALUES ($1,'upload_now',$2,$3,$4,$5,$6) RETURNING id`, [nvrId, cameraId, from, to, requestId, userId]);
+    `INSERT INTO nvr_command (nvr_id, kind, camera_id, window_start, window_end, request_id, created_by, train_request_id)
+     VALUES ($1,'upload_now',$2,$3,$4,$5,$6,$7) RETURNING id`, [nvrId, cameraId, from, to, requestId, userId, trainRequestId]);
   return rows[0].id;
 }
 
@@ -111,27 +117,38 @@ async function processRequest(id) {
 
     const waitedSince = r.upload_requested_at || r.decided_at || r.created_at;
     const expiryDays = await settings.get('request_expiry_days');
-    if (Date.now() - new Date(waitedSince).getTime() > expiryDays * 86400000) {
+    if (expiryDays > 0 && Date.now() - new Date(waitedSince).getTime() > expiryDays * 86400000) {   // 0 = never: wait for the unit however long it takes
       return await fail(r, 'expired', `the NVR did not come online and upload the footage within ${expiryDays} days (30-day FIFO)`);
     }
 
     if (r.status !== 'awaiting_upload') {
       await withTransaction(async (client) => {
-        await issueUploadCommand(client, { nvrId: r.nvr_id, cameraId: r.camera_id, from: r.window_start, to: r.window_end, requestId: id, userId: r.operator_id });
+        await issueUploadCommand(client, { nvrId: r.nvr_id, cameraId: r.camera_id, from: r.window_start, to: r.window_end, requestId: id, userId: r.operator_id, trainRequestId: r.train_request_id });
         await client.query(`UPDATE video_request SET status='awaiting_upload', upload_requested_at=now() WHERE id=$1 AND status = ANY($2)`, [id, ['approved', 'amended']]);
         await audit(client, { user: null, action: 'request.awaiting_upload', entity: 'video_request', entityId: id, zoneId: r.zone_id, details: { missing: cov.gaps } });
-        await notify.send(client, { zone_id: r.zone_id, post_id: r.post_id, kind: 'request', ref_entity: 'video_request', ref_id: id,
+        if (!r.train_request_id) await notify.send(client, { zone_id: r.zone_id, post_id: r.post_id, kind: 'request', ref_entity: 'video_request', ref_id: id,
           title: `Request #${id} approved - waiting for the train's NVR`,
           body: 'The footage is on the train. CMS has told the NVR to upload it; it will arrive when the train is back in coverage.' });
       });
+      await refreshParent(r);
     } else if (!cmd || ['cancelled'].includes(cmd.status)) {
-      await issueUploadCommand(null, { nvrId: r.nvr_id, cameraId: r.camera_id, from: r.window_start, to: r.window_end, requestId: id });
+      await issueUploadCommand(null, { nvrId: r.nvr_id, cameraId: r.camera_id, from: r.window_start, to: r.window_end, requestId: id, trainRequestId: r.train_request_id });
     }
   } finally { processing.delete(id); }
 }
 
 async function deliver(r, cov, partial) {
-  const rel = `zone-${r.zone_id}/req-${r.id}.mp4`;
+  // <TRAIN>_M<nn>_C<nn>_<start>_<end>.mp4 under zone-<z>/train-<TRAIN>/TR<n>|REQ<n>/  (naming.js)
+  const ident = { trainNo: r.train_no, unitNo: r.unit_no, cameraNo: r.camera_no, nvrId: r.nvr_id };
+  // The file covers EXACTLY what was asked for: the M-NVR stores whole segments, so the stitched segments usually begin a little before the
+  // requested start (and end after the requested end); that surplus is cut off below. from/to = the request clipped to what the unit recorded.
+  const segFirst = cov.segments.length ? new Date(cov.segments[0].start_time) : new Date(r.window_start);
+  const segLast = cov.segments.length ? new Date(cov.segments[cov.segments.length - 1].end_time) : new Date(r.window_end);
+  const from = new Date(Math.max(new Date(r.window_start).getTime(), segFirst.getTime()));
+  const to = new Date(Math.min(new Date(r.window_end).getTime(), segLast.getTime()));
+  const first = from; const last = to;
+  const rel = naming.footagePath(r.zone_id, r.train_request_id ? `TR${r.train_request_id}` : `REQ${r.id}`, ident, first, last);
+  const fileName = naming.footageFile(ident, first, last);
   const out = absPath(rel);
   const files = cov.segments.map((s) => absPath(s.object_key));
   const missing = files.filter((f) => !exists(f));
@@ -149,33 +166,46 @@ async function deliver(r, cov, partial) {
     }
   }
 
-  await stitch(files, out);
+  const full = `${out}.full`;
+  await stitch(files, full);
+  const fullDuration = await probeDuration(full);
+  const expected = cov.segments.reduce((n, s) => n + (new Date(s.end_time) - new Date(s.start_time)) / 1000, 0);
+  if (fullDuration != null && expected > 0 && fullDuration < expected * 0.95) {
+    fs.rmSync(full, { force: true });
+    return fail(r, 'failed', `delivered file is shorter than its segments (${Math.round(fullDuration)} s of ${Math.round(expected)} s) - integrity check failed`);
+  }
+  // Trim to the requested window without re-encoding (the recorded watermark/metadata stays intact). A stream copy starts at the nearest earlier
+  // keyframe, so the first frame can precede the requested start by at most one keyframe interval (seconds, not minutes).
+  const headTrim = (from.getTime() - segFirst.getTime()) / 1000;
+  const tailTrim = (segLast.getTime() - to.getTime()) / 1000;
+  if (cov.segments.length && fullDuration != null && (headTrim > 0.5 || tailTrim > 0.5)) {
+    try { await cutClip(full, out, headTrim, Math.max(headTrim + 0.5, fullDuration - tailTrim)); fs.rmSync(full, { force: true }); }
+    catch (e) { console.warn(`request #${r.id}: could not trim to the requested window (${e.message}); delivering the whole segments`); fs.renameSync(full, out); }
+  } else fs.renameSync(full, out);
   const sha = await sha256File(out);
   const size = fs.statSync(out).size;
   const duration = await probeDuration(out);
-  const expected = cov.segments.reduce((n, s) => n + (new Date(s.end_time) - new Date(s.start_time)) / 1000, 0);
-  if (duration != null && expected > 0 && duration < expected * 0.95) {
-    fs.rmSync(out, { force: true });
-    return fail(r, 'failed', `delivered file is shorter than its segments (${Math.round(duration)} s of ${Math.round(expected)} s) - integrity check failed`);
-  }
-  const start = cov.segments[0].start_time; const end = cov.segments[cov.segments.length - 1].end_time;
+  const start = from; const end = to;
 
   await withTransaction(async (client) => {
     const cur = await loadRequest(client, r.id, { lock: true });
     if (!cur || !OPEN.includes(cur.status)) return; // cancelled / delivered meanwhile
     const { rows } = await client.query(
-      `INSERT INTO delivered_footage (video_request_id, storage_path, format, sha256, file_size_bytes, start_time, end_time, duration_s, segment_count)
-       VALUES ($1,$2,'MP4',$3,$4,$5,$6,$7,$8) RETURNING id`, [r.id, rel, sha, size, start, end, duration, files.length]);
+      `INSERT INTO delivered_footage (video_request_id, storage_path, format, sha256, file_size_bytes, start_time, end_time, duration_s, segment_count,
+                                      train_request_id, train_no, nvr_id, unit_no, camera_id, camera_no, file_name)
+       VALUES ($1,$2,'MP4',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+      [r.id, rel, sha, size, start, end, duration, files.length, r.train_request_id || null, r.train_no || null, r.nvr_id, r.unit_no || null, r.camera_id, r.camera_no || null, fileName]);
     const gapNote = partial && cov.gaps.length ? `partial delivery - the NVR has no recording for ${cov.gaps.length} part(s) of the window` : null;
     await client.query(
       `UPDATE video_request SET status='fulfilled', fulfilled_at=now(), decision_note = CASE WHEN $2::text IS NULL THEN decision_note ELSE concat_ws(' | ', decision_note, $2::text) END WHERE id=$1`,
       [r.id, gapNote]);
     await client.query(`UPDATE nvr_command SET status='cancelled', completed_at=now() WHERE request_id=$1 AND status IN ('queued','sent','acked')`, [r.id]);
     await audit(client, { user: null, action: 'request.fulfil', entity: 'video_request', entityId: r.id, zoneId: r.zone_id,
-      details: { footage_id: rows[0].id, segments: files.length, size, sha256: sha, partial } });
-    await notify.send(client, { zone_id: r.zone_id, post_id: r.post_id, kind: 'footage', ref_entity: 'delivered_footage', ref_id: rows[0].id,
+      details: { footage_id: rows[0].id, file_name: fileName, segments: files.length, size, sha256: sha, partial, train_request_id: r.train_request_id || undefined } });
+    if (!r.train_request_id) await notify.send(client, { zone_id: r.zone_id, post_id: r.post_id, kind: 'footage', ref_entity: 'delivered_footage', ref_id: rows[0].id,
       title: `Footage ready for request #${r.id}`, body: `${r.camera_name} / ${r.nvr_name}${gapNote ? ' - ' + gapNote : ''}` });
   });
+  await refreshParent(r);
 }
 
 async function fail(r, status, reason) {
@@ -185,9 +215,10 @@ async function fail(r, status, reason) {
     if (!rowCount) return;
     await client.query(`UPDATE nvr_command SET status='cancelled', completed_at=now() WHERE request_id=$1 AND status IN ('queued','sent','acked')`, [r.id]);
     await audit(client, { user: null, action: `request.${status}`, entity: 'video_request', entityId: r.id, zoneId: r.zone_id, details: { reason } });
-    await notify.send(client, { zone_id: r.zone_id, post_id: r.post_id, kind: 'request', ref_entity: 'video_request', ref_id: r.id,
+    if (!r.train_request_id) await notify.send(client, { zone_id: r.zone_id, post_id: r.post_id, kind: 'request', ref_entity: 'video_request', ref_id: r.id,
       title: `Request #${r.id} ${status === 'expired' ? 'expired' : 'failed'}`, body: reason });
   });
+  await refreshParent(r);
 }
 
 /** A segment landed: any request waiting on this camera/time may now be complete. */
@@ -231,8 +262,9 @@ async function operatorCancel(user, id, note) {
     await client.query(`UPDATE video_request SET status='cancelled', decision_note = concat_ws(' | ', decision_note, $2::text) WHERE id=$1`, [id, `cancelled by operator${note ? ': ' + note : ''}`]);
     await client.query(`UPDATE nvr_command SET status='cancelled', completed_at=now() WHERE request_id=$1 AND status IN ('queued','sent','acked')`, [id]);
     await audit(client, { user, action: 'request.cancel', entity: 'video_request', entityId: id, zoneId: r.zone_id, details: { note } });
-    await notify.send(client, { zone_id: r.zone_id, post_id: r.post_id, kind: 'request', ref_entity: 'video_request', ref_id: id, title: `Request #${id} was cancelled by CMS`, body: note || null });
+    if (!r.train_request_id) await notify.send(client, { zone_id: r.zone_id, post_id: r.post_id, kind: 'request', ref_entity: 'video_request', ref_id: id, title: `Request #${id} was cancelled by CMS`, body: note || null });
   });
+  await refreshParent(await loadRequest(null, id));
   return loadRequest(null, id);
 }
 
@@ -246,6 +278,7 @@ async function processOpen() {
   }
   const { rows } = await pool.query(`SELECT id FROM video_request WHERE status = ANY($1) ORDER BY id`, [OPEN]);
   for (const { id } of rows) { try { await processRequest(id); n++; } catch (e) { console.error(`request #${id}:`, e.message); } }
+  n += await trainSvc().processOpen();
   await pool.query(
     `UPDATE nvr_command c SET status='cancelled', completed_at=now()
       WHERE c.status IN ('queued','sent','acked') AND c.request_id IS NOT NULL

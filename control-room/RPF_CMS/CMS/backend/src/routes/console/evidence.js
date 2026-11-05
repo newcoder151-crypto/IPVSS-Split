@@ -15,8 +15,8 @@ const router = express.Router();
 const media = express.Router(); // mounted WITHOUT bearer auth: link-token authenticated
 
 const FOOTAGE_LIST = `
-  SELECT f.id, f.video_request_id AS request_id, f.format, f.sha256, f.file_size_bytes, f.duration_s, f.start_time, f.end_time, f.segment_count, f.delivered_at,
-         p.id AS post_id, p.name AS post_name, p.zone_id, c.name AS camera_name, n.name AS nvr_name, n.train_no,
+  SELECT f.id, f.video_request_id AS request_id, f.train_request_id, f.file_name, COALESCE(f.unit_no, n.unit_no, n.id) AS unit_no, COALESCE(f.camera_no, c.mnvr_camera_id, c.id) AS camera_no, r.incident_id, f.format, f.sha256, f.file_size_bytes, f.duration_s, f.start_time, f.end_time, f.segment_count, f.delivered_at,
+         p.id AS post_id, p.name AS post_name, p.zone_id, c.name AS camera_name, n.name AS nvr_name, COALESCE(f.train_no, n.train_no) AS train_no,
          r.window_start, r.window_end, r.reason,
          (SELECT COUNT(*) FROM evidence_flag e WHERE e.footage_id = f.id AND e.status = 'active') AS active_flags
     FROM delivered_footage f

@@ -1,7 +1,8 @@
 const express = require('express');
 const { pool, withTransaction } = require('../db');
 const { ALERT_SELECT, ackDelivery } = require('../services/alerts');
-const { REQUEST_SELECT, footageForRequests } = require('../services/requests');
+const { footageForTrainRequests } = require('../services/requests');
+const { TRAIN_REQUEST_SELECT } = require('../services/trainRequests');
 const { postScopeSql, canSeePost, notificationScope } = require('../services/scope');
 const { audit } = require('../services/audit');
 const { parseId, parseLimit, requireText } = require('../services/util');
@@ -54,8 +55,8 @@ router.get('/summary', wrap(async (req, res) => {
          LEFT JOIN LATERAL (SELECT status FROM incident WHERE alert_delivery_id = d.id ORDER BY id LIMIT 1) i ON TRUE
         WHERE ${scope}`, params),
     pool.query(
-      `SELECT COUNT(*) AS open_requests FROM video_request r JOIN rpf_post p ON p.id = r.post_id
-        WHERE ${scope} AND r.status IN ('submitted','approved','amended','awaiting_upload')`, params),
+      `SELECT COUNT(*) AS open_requests FROM train_request t JOIN rpf_post p ON p.id = t.post_id
+        WHERE ${scope} AND t.status IN ('submitted','approved','awaiting_upload')`, params),
     pool.query(
       `SELECT COALESCE(MAX(f.id), 0) AS last_footage_id
          FROM delivered_footage f
@@ -88,8 +89,8 @@ router.get('/:deliveryId', wrap(async (req, res) => {
   // 404 (not 403) for out-of-scope rows so ids of other posts are not confirmed to exist.
   if (!alert || !canSeePost(req.user, alert.post_id, alert.zone_id)) throw notFound('alert not found');
 
-  const [reqs, history] = await Promise.all([
-    pool.query(`${REQUEST_SELECT} WHERE r.alert_id = $1 AND r.post_id = $2 ORDER BY r.id DESC`, [alert.alert_id, alert.post_id]),
+  const [trainReqs, history] = await Promise.all([
+    pool.query(`${TRAIN_REQUEST_SELECT} WHERE t.alert_id = $1 AND t.post_id = $2 ORDER BY t.id DESC`, [alert.alert_id, alert.post_id]),
     pool.query(
       `SELECT h.changed_at, h.from_status, h.to_status, h.note, u.username AS changed_by_username
          FROM alert_history h LEFT JOIN users u ON u.id = h.changed_by
@@ -99,8 +100,8 @@ router.get('/:deliveryId', wrap(async (req, res) => {
         ORDER BY h.id`,
       [alert.alert_id, alert.alert_event_time, req.user.post_id, alert.post_name]),
   ]);
-  const footage = await footageForRequests(reqs.rows.map((r) => r.id));
-  res.json({ alert, requests: reqs.rows, footage, history: history.rows });
+  const footage = await footageForTrainRequests(trainReqs.rows.map((t) => t.id));
+  res.json({ alert, train_requests: trainReqs.rows, footage, history: history.rows });
 }));
 
 /** POST /api/alerts/:deliveryId/ack - officer acknowledges the alert (stops CMS escalation clock). */

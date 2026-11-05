@@ -11,8 +11,8 @@
 #
 # Optional (only if they differ from the defaults):  --cms-db-password <pw>   --cms-db-user <user>   --cms-db-name <db>
 # The bridge talks to the control room exactly as it always did:
-#   HTTP        http://<control-room>:7080/nvr/v1     heartbeat, GPS, alerts, footage upload
-#   PostgreSQL  <control-room>:5432 (database "cms")   its self-registration rows only
+#   HTTP        http://<control-room>:<CMS_PORT>/nvr/v1    heartbeat, GPS, alerts, footage upload
+#   PostgreSQL  <control-room>:<CMS_DB_PORT> (CMS database)   its self-registration rows only
 # Before the first start, on the control-room PC run once:   bash start.sh allow-train <this-pc-ip>
 # Needs: Linux with Node 18+, PostgreSQL 15+ (local, for the M-NVR), ffmpeg, psql, curl, python3 (installed for you if sudo allows).
 # =============================================================================
@@ -29,36 +29,55 @@ CONF="$ROOT/data/train.conf"
 conf_get(){ [[ -f "$CONF" ]] && grep -E "^$1=" "$CONF" | tail -n1 | cut -d= -f2-; }
 conf_set(){ local k="$1" v="$2" tmp; touch "$CONF"; chmod 600 "$CONF" 2>/dev/null; tmp="$(grep -vE "^$k=" "$CONF")"; { [[ -n "$tmp" ]] && printf '%s\n' "$tmp"; printf '%s=%s\n' "$k" "$v"; } > "$CONF"; }
 
+# ---- settings: hosts, ports, database names live in config/train.conf (nothing is hard-coded in this script) -----------------
+CFG="${IPVSS_CONFIG:-$ROOT/config/train.conf}"
+[[ -r "$CFG" ]] || die "config file not found: $CFG   (it holds this PC's ports and hosts; restore it from the project, or point IPVSS_CONFIG at yours)"
+cfg(){ grep -E "^$1=" "$CFG" | tail -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//'; }
+cfg_need(){ local v="${!1:-}"; [[ -n "$v" ]] || v="$(cfg "$1")"; [[ -n "$v" ]] || die "$1 is not set in $CFG"; printf '%s' "$v"; }
+CFG_LOOPBACK_HOST="$(cfg_need LOOPBACK_HOST)"; CFG_DB_HOST="$(cfg_need DB_HOST)"; CFG_DB_PORT="$(cfg_need DB_PORT)"; CFG_DB_ADMIN_USER="$(cfg_need DB_ADMIN_USER)"
+CFG_MNVR_DB_NAME="$(cfg_need MNVR_DB_NAME)"; CFG_MNVR_DB_USER="$(cfg_need MNVR_DB_USER)"
+CFG_CMS_PORT="$(cfg_need CMS_PORT)"; CFG_CMS_DB_PORT="$(cfg_need CMS_DB_PORT)"; CFG_CMS_DB_NAME="$(cfg_need CMS_DB_NAME)"; CFG_CMS_DB_USER="$(cfg_need CMS_DB_USER)"; CFG_CMS_DB_PASSWORD="$(cfg_need CMS_DB_PASSWORD)"
+CFG_MNVR_API_PORT="$(cfg_need MNVR_API_PORT)"; CFG_MNVR_UI_PORT="$(cfg_need MNVR_UI_PORT)"; CFG_BRIDGE_STATUS_PORT="$(cfg_need BRIDGE_STATUS_PORT)"
+CFG_PREFERRED_PREFIX="${PREFERRED_NETWORK_PREFIX:-$(cfg PREFERRED_NETWORK_PREFIX)}"; CFG_SKIP_PREFIXES="${SKIP_NETWORK_PREFIXES:-$(cfg SKIP_NETWORK_PREFIXES)}"
+
 CMD="start"; ARG=""
 while [[ $# -gt 0 ]]; do case "$1" in
   start|stop|status|logs|restart|reset-passwords|check-cms|choose-ip) CMD="$1";;
-  --cms)             shift; v="${1:-}"; [[ -n "$v" ]] || die "--cms needs the control-room address, e.g.  --cms 172.210.140.20"
+  --cms)             shift; v="${1:-}"; [[ -n "$v" ]] || die "--cms needs the control-room address, e.g.  --cms <control-room-address>"
                      v="${v#http://}"; v="${v%%/*}"
                      if [[ "$v" == *:* && "$v" != *:*:* ]]; then conf_set CMS_HOST "${v%%:*}"; conf_set CMS_PORT "${v##*:}"; else conf_set CMS_HOST "$v"; fi;;
   --ip)              shift; [[ -n "${1:-}" ]] && echo "$1" > "$ROOT/data/host-ip";;
   --cms-db-password) shift; conf_set CMS_DB_PASSWORD "${1:-}";;
   --cms-db-user)     shift; conf_set CMS_DB_USER "${1:-}";;
   --cms-db-name)     shift; conf_set CMS_DB_NAME "${1:-}";;
+  --train-no)        shift; [[ -n "${1:-}" ]] || die "--train-no needs the train number"; conf_set TRAIN_NO "$1";;
+  --mnvr-no)         shift; [[ "${1:-}" =~ ^[0-9]+$ && "$1" -ge 1 && "$1" -le 99 ]] || die "--mnvr-no needs this M-NVR's number inside the train (1..99)"; conf_set MNVR_NO "$1";;
   *) ARG="$1";;
 esac; shift; done
 
 CMS_HOST="${CMS_HOST:-$(conf_get CMS_HOST)}"
-CMS_PORT="${CMS_PORT:-$(conf_get CMS_PORT)}";                 CMS_PORT="${CMS_PORT:-7080}"
-CMS_DB_USER="${CMS_DB_USER:-$(conf_get CMS_DB_USER)}";        CMS_DB_USER="${CMS_DB_USER:-cms}"
-CMS_DB_NAME="${CMS_DB_NAME:-$(conf_get CMS_DB_NAME)}";        CMS_DB_NAME="${CMS_DB_NAME:-cms}"
-CMS_DB_PW="${CMS_DB_PASSWORD:-$(conf_get CMS_DB_PASSWORD)}";  CMS_DB_PW="${CMS_DB_PW:-cms}"
-CMS_DB_PORT="${CMS_DB_PORT:-5432}"
-need_cms(){ [[ -n "$CMS_HOST" ]] || die "where is the control room?  run once:   bash start.sh --cms <control-room-ip>      (e.g. 192.168.1.20; use 'localhost' only if CMS runs on this very PC)"; }
+CMS_PORT="${CMS_PORT:-$(conf_get CMS_PORT)}";                 CMS_PORT="${CMS_PORT:-$CFG_CMS_PORT}"
+CMS_DB_USER="${CMS_DB_USER:-$(conf_get CMS_DB_USER)}";        CMS_DB_USER="${CMS_DB_USER:-$CFG_CMS_DB_USER}"
+CMS_DB_NAME="${CMS_DB_NAME:-$(conf_get CMS_DB_NAME)}";        CMS_DB_NAME="${CMS_DB_NAME:-$CFG_CMS_DB_NAME}"
+CMS_DB_PW="${CMS_DB_PASSWORD:-$(conf_get CMS_DB_PASSWORD)}";  CMS_DB_PW="${CMS_DB_PW:-$CFG_CMS_DB_PASSWORD}"
+CMS_DB_PORT="${CMS_DB_PORT:-$CFG_CMS_DB_PORT}"
+TRAIN_NO="${TRAIN_NO:-$(conf_get TRAIN_NO)}"; TRAIN_NO="${TRAIN_NO:-$(cfg TRAIN_NO)}"
+MNVR_NO="${MNVR_NO:-$(conf_get MNVR_NO)}"; MNVR_NO="${MNVR_NO:-$(cfg MNVR_NO)}"
+need_cms(){ [[ -n "$CMS_HOST" ]] || die "where is the control room?  run once:   bash start.sh --cms <control-room-ip>      (use the loopback address only if CMS runs on this very PC)"; }
 
 # ---- this PC's address, as shown in the messages and shown in the messages ------------------------------------------------
-# Order: --ip <address> (saved in data/host-ip) or HOST_IP; else the address in 172.210.140.x; else any address that is not 192.168.x /
+# Order: --ip <address> (saved in data/host-ip) or HOST_IP; else an address starting with PREFERRED_NETWORK_PREFIX (config/train.conf); else any address not starting with SKIP_NETWORK_PREFIXES /
 # docker / loopback; else the first one. (A PC with several network cards no longer prints the wrong one.)
 my_ip() {
-  local f="$ROOT/data/host-ip" ip ips; ips="$(hostname -I 2>/dev/null)"
+  local f="$ROOT/data/host-ip" ip ips p skip; ips="$(hostname -I 2>/dev/null)"
   [[ -n "${HOST_IP:-}" ]] && { echo "$HOST_IP"; return; }
   [[ -s "$f" ]] && { head -n1 "$f"; return; }
-  for ip in $ips; do [[ "$ip" == 172.210.140.* ]] && { echo "$ip"; return; }; done
-  for ip in $ips; do case "$ip" in 192.168.*|172.17.*|172.18.*|127.*|169.254.*|*:*) ;; *.*.*.*) echo "$ip"; return;; esac; done
+  if [[ -n "$CFG_PREFERRED_PREFIX" ]]; then for ip in $ips; do [[ "$ip" == "$CFG_PREFERRED_PREFIX"* ]] && { echo "$ip"; return; }; done; fi
+  for ip in $ips; do
+    [[ "$ip" == *:* || "$ip" != *.*.*.* ]] && continue
+    skip=0; for p in $CFG_SKIP_PREFIXES; do [[ "$ip" == "$p"* ]] && skip=1; done
+    [[ $skip -eq 0 ]] && { echo "$ip"; return; }
+  done
   echo "${ips%% *}"
 }
 
@@ -102,11 +121,11 @@ ensure_system() {
   for c in "${missing[@]}"; do command -v "$c" >/dev/null || die "$c is not installed. Run:  sudo apt install -y ${pk[*]}   (then run start.sh again)"; done
 }
 ensure_postgres() {
-  if command -v pg_isready >/dev/null && pg_isready -q -h localhost 2>/dev/null; then return 0; fi
+  if command -v pg_isready >/dev/null && pg_isready -q -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" 2>/dev/null; then return 0; fi
   say "starting PostgreSQL"
   { $SUDO systemctl start postgresql || $SUDO service postgresql start; } >/dev/null 2>&1 || true
-  for _ in 1 2 3 4 5 6 7 8; do pg_isready -q -h localhost 2>/dev/null && return 0; sleep 1; done
-  warn "PostgreSQL is not answering on localhost:5432 - install/start it (sudo apt install postgresql postgis) and run start.sh again"
+  for _ in 1 2 3 4 5 6 7 8; do pg_isready -q -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" 2>/dev/null && return 0; sleep 1; done
+  warn "PostgreSQL is not answering on $CFG_DB_HOST:$CFG_DB_PORT - install/start it (sudo apt install postgresql postgis) and run start.sh again"
 }
 
 # ---- npm packages: install whatever is missing (the individual launchers only install when node_modules is absent) -------
@@ -137,20 +156,20 @@ pg_su(){
   if [[ $EUID -eq 0 ]]; then ( cd /tmp && runuser -u postgres -- psql -qtAc "$sql" ) 2>/dev/null && return 0
   elif command -v sudo >/dev/null; then ( cd /tmp && sudo -u postgres psql -qtAc "$sql" ) 2>/dev/null && return 0; fi
   sp="${PG_SUPERUSER_PASSWORD:-}"; su="${PG_SUPERUSER:-postgres}"
-  [[ -n "$sp" ]] && PGPASSWORD="$sp" psql -h localhost -U "$su" -d postgres -qtAc "$sql" 2>/dev/null
+  [[ -n "$sp" ]] && PGPASSWORD="$sp" psql -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" -U "$su" -d postgres -qtAc "$sql" 2>/dev/null
 }
 
 # M-NVR database (role + database "mnvr", password "mnvr"): created HERE in the foreground, because the M-NVR launcher runs in the
 # background where sudo cannot ask for a password (that was why the first-run setup silently did nothing)
 ensure_mnvr_db(){
   local pw="$1"
-  PGPASSWORD="$pw" psql -h localhost -U mnvr -d mnvr -tAc 'select 1' >/dev/null 2>&1 && return 0
+  PGPASSWORD="$pw" psql -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" -U "$CFG_MNVR_DB_USER" -d "$CFG_MNVR_DB_NAME" -tAc 'select 1' >/dev/null 2>&1 && return 0
   say "preparing the M-NVR database (sudo may ask for your password)"
   pg_su "CREATE ROLE mnvr LOGIN PASSWORD '$pw'" >/dev/null || true
   pg_su "ALTER ROLE mnvr WITH LOGIN PASSWORD '$pw'" >/dev/null || true
   pg_su "CREATE DATABASE mnvr OWNER mnvr" >/dev/null || true
   pg_su "GRANT ALL PRIVILEGES ON DATABASE mnvr TO mnvr" >/dev/null || true
-  PGPASSWORD="$pw" psql -h localhost -U mnvr -d mnvr -tAc 'select 1' >/dev/null 2>&1 \
+  PGPASSWORD="$pw" psql -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" -U "$CFG_MNVR_DB_USER" -d "$CFG_MNVR_DB_NAME" -tAc 'select 1' >/dev/null 2>&1 \
     || warn "could not create/open the M-NVR database - run: sudo -u postgres psql -c \"CREATE ROLE mnvr LOGIN PASSWORD '$pw'\" -c \"CREATE DATABASE mnvr OWNER mnvr\""
 }
 
@@ -190,14 +209,14 @@ do_check_cms() {
 # after starting: wait until the bridge really is connected, otherwise say WHY (its own health page knows the reason)
 wait_link() {
   local i j; for i in $(seq 1 20); do
-    j="$(curl -s -m 3 http://127.0.0.1:8095/health 2>/dev/null)"
+    j="$(curl -s -m 3 http://$CFG_LOOPBACK_HOST:$CFG_BRIDGE_STATUS_PORT/health 2>/dev/null)"
     if echo "$j" | grep -q '"online": true'; then say "bridge is connected to the control room ($CMS_HOST)"; return 0; fi
     sleep 2
   done
   warn "the bridge is running but NOT connected to the control room yet."
   echo "     bridge says: $(echo "$j" | tr -d '\n' | sed -n 's/.*"stage": *"\([^"]*\)".*"error": *"\([^"]*\)".*/\1 - \2/p')"
   do_check_cms || true
-  echo "     (the bridge keeps retrying by itself - once the cause above is fixed it connects without a restart; look:  curl http://127.0.0.1:8095/health)"
+  echo "     (the bridge keeps retrying by itself - once the cause above is fixed it connects without a restart; look:  curl http://$CFG_LOOPBACK_HOST:$CFG_BRIDGE_STATUS_PORT/health)"
   return 1
 }
 
@@ -220,14 +239,14 @@ do_start() {
 
   # 2. the train: M-NVR (first run creates its database)
   local MP; MP="$(envget "$MNVR/backend/api/.env" DB_PASSWORD)"; MP="${MP:-mnvr}"
-  local MPORT; MPORT="$(envget "$MNVR/backend/api/.env" PORT)"; MPORT="${MPORT:-3001}"
+  local MPORT; MPORT="$(envget "$MNVR/backend/api/.env" PORT)"; MPORT="${MPORT:-$CFG_MNVR_API_PORT}"
   ensure_mnvr_db "$MP"
   local setup=""
-  [[ -n "$(PGPASSWORD="$MP" psql -h localhost -U mnvr -d mnvr -tAc "select to_regclass('public.users')" 2>/dev/null)" ]] || setup="--setup-db"
+  [[ -n "$(PGPASSWORD="$MP" psql -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" -U "$CFG_MNVR_DB_USER" -d "$CFG_MNVR_DB_NAME" -tAc "select to_regclass('public.users')" 2>/dev/null)" ]] || setup="--setup-db"
   say "starting M-NVR ${setup:+(first run: database setup)}"
   (cd "$MNVR" && setsid nohup bash scripts/start.sh $setup > "$LOGS/mnvr.log" 2>&1 < /dev/null &)
-  if wait_url "http://localhost:$MPORT/api/health" 240; then
-    wait_url "http://localhost:8080" 90 || warn "M-NVR web page (:8080) is still starting - see logs/mnvr.log"
+  if wait_url "http://$CFG_LOOPBACK_HOST:$MPORT/api/health" 240; then
+    wait_url "http://$CFG_LOOPBACK_HOST:$CFG_MNVR_UI_PORT" 90 || warn "M-NVR web page (:$CFG_MNVR_UI_PORT) is still starting - see logs/mnvr.log"
     MNVR_UP=1
   else
     MNVR_UP=0
@@ -241,10 +260,12 @@ do_start() {
     say "configuring the bridge (control room: $CMS_HOST)"
     {
       echo "CMS_URL=$(CMS_URL_BASE)"
-      echo "MNVR_DB_HOST=localhost"; echo "MNVR_DB_NAME=mnvr"; echo "MNVR_DB_USER=mnvr"; echo "MNVR_DB_PASSWORD=$MP"
+      echo "MNVR_DB_HOST=$CFG_DB_HOST"; echo "MNVR_DB_PORT=$CFG_DB_PORT"; echo "MNVR_DB_NAME=$CFG_MNVR_DB_NAME"; echo "MNVR_DB_USER=$CFG_MNVR_DB_USER"; echo "MNVR_DB_PASSWORD=$MP"
       echo "CMS_DB_HOST=$CMS_HOST"; echo "CMS_DB_PORT=$CMS_DB_PORT"; echo "CMS_DB_NAME=$CMS_DB_NAME"
       echo "CMS_DB_USER=$CMS_DB_USER"; echo "CMS_DB_PASSWORD=$CMS_DB_PW"
       echo "RECORDINGS_DIR=$(envget "$MNVR/backend/api/.env" RECORDINGS_PATH)"
+      echo "STATUS_PORT=$CFG_BRIDGE_STATUS_PORT"
+      [[ -n "$TRAIN_NO" ]] && echo "TRAIN_NO=$TRAIN_NO"; [[ -n "$MNVR_NO" ]] && echo "MNVR_NO=$MNVR_NO"
     } > "$BR/.env"; chmod 600 "$BR/.env" 2>/dev/null; touch "$BR/.env.generated"
   fi
   say "starting the bridge"
@@ -253,11 +274,11 @@ do_start() {
 
   [[ -f "$ROOT/data/.passwords-reset" ]] || do_reset_passwords   # once: every M-NVR account -> Admin@123
 
-  local me; me="$(my_ip)"; me="${me:-localhost}"
+  local me; me="$(my_ip)"; me="${me:-$CFG_LOOPBACK_HOST}"
   [[ "${MNVR_UP:-0}" == 1 ]] && echo "" && echo "  M-NVR + bridge are running." || { echo ""; echo "  The bridge is running, but M-NVR is NOT up yet - see: bash start.sh logs mnvr"; }
   cat <<MSG
-    M-NVR   http://$me:8080     admin / Admin@123  (all logins: Admin@123)
-    Bridge  http://127.0.0.1:8095/health      logs: bash start.sh logs bridge
+    M-NVR   http://$me:$CFG_MNVR_UI_PORT     admin / Admin@123  (all logins: Admin@123)
+    Bridge  http://$CFG_LOOPBACK_HOST:$CFG_BRIDGE_STATUS_PORT/health      logs: bash start.sh logs bridge
   Control room (CMS + RPF) is on: $CMS_HOST     CMS console http://$CMS_HOST:$CMS_PORT/console/
   The first start downloads the AI packages in the background (a few GB) - M-NVR is usable meanwhile; progress: bash start.sh logs mnvr
   Stop all: bash start.sh stop

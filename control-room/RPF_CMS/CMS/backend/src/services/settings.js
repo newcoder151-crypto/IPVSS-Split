@@ -20,7 +20,7 @@ const SCHEMA = {
   escalation_minutes: { type: 'int', min: 1, max: 1440, label: 'Escalate unacknowledged alerts after (minutes)' },
   request_max_window_min: { type: 'int', min: 1, max: 1440, label: 'Longest footage window per request (minutes)' },
   retention_days: { type: 'int', min: 1, max: 3650, label: 'Raw segment retention, FIFO (days)' },
-  request_expiry_days: { type: 'int', min: 1, max: 3650, label: 'Expire a request still waiting for its NVR after (days)' },
+  request_expiry_days: { type: 'int', min: 0, max: 3650, label: 'Give up on a request still waiting for its NVR after (days) - 0 = never, keep waiting until it connects' },
   nvr_offline_after_s: { type: 'int', min: 10, max: 86400, label: 'Treat an NVR as offline after (seconds without heartbeat)' },
   auto_approve_requests: { type: 'bool', label: 'Auto-approve footage requests (demo / trusted posts only)' },
   retention_auto: { type: 'bool', label: 'Run the retention job automatically every hour' },

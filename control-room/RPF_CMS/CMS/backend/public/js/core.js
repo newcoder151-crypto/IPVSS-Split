@@ -82,7 +82,7 @@
   C.badge = (text, cls) => h('span', { class: `badge ${cls || ''}` }, C.label(text));
   const CLS = {
     alert: { new: 'amber', routed: 'blue', escalated: 'red', acknowledged: 'green', resolved: 'green', dismissed: 'grey' },
-    req: { submitted: 'amber', approved: 'indigo', amended: 'indigo', awaiting_upload: 'teal', fulfilled: 'green', rejected: 'red', cancelled: 'grey', failed: 'red', expired: 'grey' },
+    req: { submitted: 'amber', approved: 'indigo', amended: 'indigo', awaiting_upload: 'teal', fulfilled: 'green', partial: 'amber', rejected: 'red', cancelled: 'grey', failed: 'red', expired: 'grey' },
     inc: { open: 'red', under_review: 'amber', closed: 'grey' },
     arch: { pending: 'amber', archived: 'green', failed: 'red', purged: 'grey', not_requested: 'grey' },
     seg: { pending: 'amber', partial: 'blue', complete: 'green', failed: 'red' },
@@ -165,6 +165,74 @@
     const b = e.currentTarget; b.disabled = true;
     try { await fn(); } catch (ex) { C.toast(ex.message); } finally { b.disabled = false; }
   } }, text);
+
+
+  // ---------- long lists grouped by DAY, then by something finer inside each day ----------
+  // C.groupedList(id, rows, { dates, subs, defaultSub, noun }, build) -> element. `build(rowsOfOneGroup)` returns the usual table.
+  //   dates : [[key, 'Date recorded', row => date], ...]   which date the days are made from
+  //   subs  : [[key, 'Train', row => 'group title'], ...]  what the rows of one day are grouped by (or none)
+  // The choices and which groups are folded are remembered per list while the page is open.
+  C.dayKey = (d) => { const x = new Date(d); return Number.isNaN(x.getTime()) ? 'unknown' : `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
+  C.dayTitle = (key) => {
+    if (key === 'unknown') return 'Date unknown';
+    const [y, m, d] = key.split('-').map(Number); const day = new Date(y, m - 1, d); const now = new Date();
+    const diff = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - day) / 86400000);
+    const text = day.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    return diff === 0 ? `Today - ${text}` : diff === 1 ? `Yesterday - ${text}` : text;
+  };
+  C.groupedList = (id, rows, cfg, build) => {
+    S.groupState = S.groupState || {};
+    const g = (S.groupState[id] = S.groupState[id] || { date: cfg.dates[0][0], sub: cfg.defaultSub === undefined ? '' : cfg.defaultSub, folded: new Set() });
+    const noun = cfg.noun || 'item';
+    const out = h('div', { class: 'grouped' });
+    const paint = () => {
+      const dateFn = g.date ? (cfg.dates.find((d) => d[0] === g.date) || cfg.dates[0])[2] : null;
+      const subFn = g.sub ? (cfg.subs.find((x) => x[0] === g.sub) || [])[2] : null;
+      if (!dateFn) { out.replaceChildren(subFn ? bucketsView(rows, subFn, null) : build(rows)); return; }
+      const sorted = rows.slice().sort((a, b) => new Date(dateFn(b) || 0) - new Date(dateFn(a) || 0));
+      const days = new Map();
+      for (const r of sorted) { const k = C.dayKey(dateFn(r)); if (!days.has(k)) days.set(k, []); days.get(k).push(r); }
+      out.replaceChildren(...[...days.entries()].map(([k, list]) => fold(`d:${k}`, 'dgroup', C.dayTitle(k), `${list.length} ${noun}${list.length === 1 ? '' : 's'}`, subFn ? bucketsView(list, subFn, k) : build(list))));
+    };
+    const fold = (key, cls, title, count, body) => {
+      const det = h('details', { class: cls }, h('summary', {}, h('span', { class: 'dg-title' }, title), h('span', { class: 'dg-count' }, count)), body);
+      if (!g.folded.has(key)) det.setAttribute('open', '');
+      det.addEventListener('toggle', () => { if (det.open) g.folded.delete(key); else g.folded.add(key); });
+      return det;
+    };
+    const bucketsView = (list, subFn, dayKey) => {
+      const m = new Map();
+      for (const r of list) { const k = String(subFn(r)); if (!m.has(k)) m.set(k, []); m.get(k).push(r); }
+      return h('div', { class: 'sgroups' }, [...m.entries()].map(([k, l]) => fold(`s:${dayKey}|${k}`, 'sgroup', k, `${l.length} ${noun}${l.length === 1 ? '' : 's'}`, build(l))));
+    };
+    const sel = (label, value, opts, onchange) => h('label', { class: 'fsel' }, h('span', {}, label), h('select', { onchange: (e) => onchange(e.target.value) }, opts.map(([v, t]) => h('option', { value: v, selected: v === value }, t))));
+    const setAll = (fold_) => { for (const d of out.querySelectorAll('details')) { d.open = !fold_; } };
+    const bar = h('div', { class: 'filterbar groupbar' },
+      sel('Group by day of', g.date, [...cfg.dates.map((d) => [d[0], d[1]]), ['', 'No day grouping']], (v) => { g.date = v; paint(); }),
+      sel('Then group by', g.sub, [['', 'Nothing more'], ...cfg.subs.map((x) => [x[0], x[1]])], (v) => { g.sub = v; paint(); }),
+      h('button', { class: 'btn sm', type: 'button', onclick: () => setAll(false) }, 'Open all'), h('button', { class: 'btn sm', type: 'button', onclick: () => setAll(true) }, 'Fold all'));
+    paint();
+    return rows.length ? h('div', {}, bar, out) : build(rows);
+  };
+
+  // C.groupedBy(id, rows, { key: row => key, title: (key, rows) => text, summary: rows => text, order: [keys..]? }, build) - folding groups of one list
+  C.groupedBy = (id, rows, cfg, build) => {
+    S.groupState = S.groupState || {};
+    const g = (S.groupState[id] = S.groupState[id] || { folded: new Set() });
+    if (!rows.length) return build(rows);
+    const m = new Map();
+    for (const r of rows) { const k = cfg.key(r); if (!m.has(k)) m.set(k, []); m.get(k).push(r); }
+    const keys = [...m.keys()].sort(cfg.sort || ((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true })));
+    const out = h('div', { class: 'grouped' }, keys.map((k) => {
+      const list = m.get(k);
+      const det = h('details', { class: 'dgroup' }, h('summary', {}, h('span', { class: 'dg-title' }, cfg.title(k, list)), h('span', { class: 'dg-count' }, cfg.summary(list))), build(list));
+      if (!g.folded.has(k)) det.setAttribute('open', '');
+      det.addEventListener('toggle', () => { if (det.open) g.folded.delete(k); else g.folded.add(k); });
+      return det;
+    }));
+    return h('div', {}, h('div', { class: 'filterbar groupbar' }, h('button', { class: 'btn sm', type: 'button', onclick: () => out.querySelectorAll('details').forEach((d) => { d.open = true; }) }, 'Open all'),
+      h('button', { class: 'btn sm', type: 'button', onclick: () => out.querySelectorAll('details').forEach((d) => { d.open = false; }) }, 'Fold all')), out);
+  };
 
   C.table = (cols, rows, empty) => rows.length
     ? h('div', { class: 'card table-wrap' }, h('table', {}, h('thead', {}, h('tr', {}, cols.map((c) => h('th', {}, c)))), h('tbody', {}, rows)))

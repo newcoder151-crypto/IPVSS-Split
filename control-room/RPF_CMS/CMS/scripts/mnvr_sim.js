@@ -5,7 +5,7 @@
  * can be run and demonstrated without hardware. DEV / DEMO ONLY: it talks to CMS exactly the way a
  * real unit does (heartbeat + GPS track, alerts, resumable chunked uploads, upload-now commands).
  *
- *   node scripts/mnvr_sim.js run   [--units 1,2,3] [--api http://localhost:7080] [--alerts 60]
+ *   node scripts/mnvr_sim.js run   [--units 1,2,3] [--api <cms url>] [--alerts 60]
  *   node scripts/mnvr_sim.js alert --unit 1 --type intrusion --priority 9 [--camera 1] [--lat .. --lon ..]
  *   node scripts/mnvr_sim.js offline <unit>      # the train enters a tunnel: no contact with CMS
  *   node scripts/mnvr_sim.js online  <unit>
@@ -26,7 +26,8 @@ const { execFileSync } = require('child_process');
 const ARGS = process.argv.slice(2);
 const CMD = ARGS[0] && !ARGS[0].startsWith('--') ? ARGS[0] : 'run';
 const opt = (name, dflt) => { const i = ARGS.indexOf(`--${name}`); return i >= 0 && ARGS[i + 1] && !ARGS[i + 1].startsWith('--') ? ARGS[i + 1] : dflt; };
-const API = opt('api', process.env.CMS_URL || 'http://localhost:7080').replace(/\/$/, '') + '/nvr/v1';
+if (!opt('api', process.env.CMS_URL)) { console.error('Give the CMS address:  --api <url>  or the CMS_URL environment variable (bash start.sh demo passes it from config/control-room.conf).'); process.exit(1); }
+const API = opt('api', process.env.CMS_URL).replace(/\/$/, '') + '/nvr/v1';
 const RUN_DIR = path.resolve(process.env.SIM_DIR || path.join(__dirname, '..', 'run'));
 const SEG_S = 10;
 const REC_MIN = Number(process.env.REC_MINUTES || 90);

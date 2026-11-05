@@ -19,6 +19,16 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="$ROOT/logs"
 PID_DIR="$ROOT/.pids"
 mkdir -p "$LOG_DIR" "$PID_DIR"
+
+# ---- settings: hosts, ports, database names live in train/config/train.conf (nothing is hard-coded here) ---------------------
+CFG="${IPVSS_CONFIG:-$ROOT/../config/train.conf}"
+[[ -r "$CFG" ]] || { echo "error: config file not found: $CFG  (restore train/config/train.conf, or point IPVSS_CONFIG at yours)" >&2; exit 1; }
+cfg(){ grep -E "^$1=" "$CFG" | tail -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//'; }
+cfg_need(){ local v="${!1:-}"; [[ -n "$v" ]] || v="$(cfg "$1")"; [[ -n "$v" ]] || { echo "error: $1 is not set in $CFG" >&2; exit 1; }; printf '%s' "$v"; }
+CFG_LOOPBACK_HOST="$(cfg_need LOOPBACK_HOST)"; CFG_DB_HOST="$(cfg_need DB_HOST)"; CFG_DB_PORT="$(cfg_need DB_PORT)"
+CFG_MNVR_DB_NAME="$(cfg_need MNVR_DB_NAME)"; CFG_MNVR_DB_USER="$(cfg_need MNVR_DB_USER)"; CFG_MNVR_DB_PASSWORD="$(cfg_need MNVR_DB_PASSWORD)"
+CFG_API_PORT="$(cfg_need MNVR_API_PORT)"; CFG_UI_PORT="$(cfg_need MNVR_UI_PORT)"; CFG_MTX_API="$(cfg_need MEDIAMTX_API_PORT)"; CFG_MTX_RTSP="$(cfg_need MEDIAMTX_RTSP_PORT)"
+CFG_MTX_WEBRTC="$(cfg_need MEDIAMTX_WEBRTC_PORT)"; CFG_MTX_HLS="$(cfg_need MEDIAMTX_HLS_PORT)"; CFG_AI_PORT="$(cfg_need AI_SIDECAR_PORT)"; CFG_BIND_HOST="$(cfg_need BIND_HOST)"
 STORAGE="/storage"   # decided properly in step 1 (needs the .env); /storage -> falls back to <repo>/storage if it cannot be created
 
 # ── Arg parsing ───────────────────────────────────────────────────────────────
@@ -144,12 +154,12 @@ if $DO_STATUS; then
       && printf "  ${G}✓${NC} %-46s ${G}UP${NC}\n" "$2" \
       || printf "  ${R}✗${NC} %-46s ${R}DOWN${NC}\n" "$2"
   }
-  check_http "http://localhost:${PORT:-3001}/api/health"  "API       http://localhost:${PORT:-3001}/api"
-  check_http "http://localhost:9997/v3/paths/list"        "MediaMTX  http://localhost:9997"
-  check_http "http://localhost:8889"                      "MTX WebRTC http://localhost:8889"
-  check_http "http://localhost:8888"                       "MTX HLS   http://localhost:8888"
-  check_http "http://localhost:8000/health"                "AI Sidecar http://localhost:8000 (Smart Search)"
-  check_http "http://localhost:8080"                       "Frontend  http://localhost:8080"
+  check_http "http://$CFG_LOOPBACK_HOST:${PORT:-$CFG_API_PORT}/api/health"  "API       http://$CFG_LOOPBACK_HOST:${PORT:-$CFG_API_PORT}/api"
+  check_http "http://$CFG_LOOPBACK_HOST:$CFG_MTX_API/v3/paths/list"        "MediaMTX  http://$CFG_LOOPBACK_HOST:$CFG_MTX_API"
+  check_http "http://$CFG_LOOPBACK_HOST:$CFG_MTX_WEBRTC"                      "MTX WebRTC http://$CFG_LOOPBACK_HOST:$CFG_MTX_WEBRTC"
+  check_http "http://$CFG_LOOPBACK_HOST:$CFG_MTX_HLS"                       "MTX HLS   http://$CFG_LOOPBACK_HOST:$CFG_MTX_HLS"
+  check_http "http://$CFG_LOOPBACK_HOST:$CFG_AI_PORT/health"                "AI Sidecar http://$CFG_LOOPBACK_HOST:$CFG_AI_PORT (Smart Search)"
+  check_http "http://$CFG_LOOPBACK_HOST:$CFG_UI_PORT"                       "Frontend  http://$CFG_LOOPBACK_HOST:$CFG_UI_PORT"
   exit 0
 fi
 
@@ -172,20 +182,20 @@ hdr "1/9  Environment"
 ENV_FILE="$ROOT/backend/api/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
   warn "backend/api/.env not found — creating defaults"
-  cat > "$ENV_FILE" << 'ENVEOF'
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=mnvr
-DB_USER=mnvr
-DB_PASSWORD=mnvr
-JWT_SECRET=railway-nvr-super-secret-change-in-production
+  cat > "$ENV_FILE" << ENVEOF
+DB_HOST=$CFG_DB_HOST
+DB_PORT=$CFG_DB_PORT
+DB_NAME=$CFG_MNVR_DB_NAME
+DB_USER=$CFG_MNVR_DB_USER
+DB_PASSWORD=$CFG_MNVR_DB_PASSWORD
+JWT_SECRET=$(head -c 36 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 48)
 STORAGE_PATH=/storage
 RECORDINGS_PATH=/storage/recordings
 HLS_PATH=/storage/hls
-PORT=3001
+PORT=$CFG_API_PORT
 NODE_ENV=development
-MEDIAMTX_API=http://localhost:9997
-MEDIAMTX_RTSP=localhost:8554
+MEDIAMTX_API=http://$CFG_LOOPBACK_HOST:$CFG_MTX_API
+MEDIAMTX_RTSP=$CFG_LOOPBACK_HOST:$CFG_MTX_RTSP
 # MEDIAMTX_WEB / MEDIAMTX_HLS intentionally NOT set here. These are the
 # browser-facing WebRTC/HLS URLs — hardcoding them to localhost meant they
 # silently pointed at the *viewer's own machine* whenever the dashboard was
@@ -199,9 +209,9 @@ fi
 set -a; source "$ENV_FILE"; set +a
 
 # Ensure MediaMTX vars exist in env file (add if missing)
-grep -q "MEDIAMTX_API" "$ENV_FILE" || cat >> "$ENV_FILE" << 'ADDENV'
-MEDIAMTX_API=http://localhost:9997
-MEDIAMTX_RTSP=localhost:8554
+grep -q "MEDIAMTX_API" "$ENV_FILE" || cat >> "$ENV_FILE" << ADDENV
+MEDIAMTX_API=http://$CFG_LOOPBACK_HOST:$CFG_MTX_API
+MEDIAMTX_RTSP=$CFG_LOOPBACK_HOST:$CFG_MTX_RTSP
 ADDENV
 
 # VITE_API_URL is deliberately EMPTY: the browser then calls /api and /ws on the same host:port it loaded the page from,
@@ -233,7 +243,7 @@ STORAGE="$(cd "$STORAGE" && pwd)"
 setenv(){ if grep -qE "^$1=" "$ENV_FILE"; then sed -i "s|^$1=.*|$1=$2|" "$ENV_FILE"; else echo "$1=$2" >> "$ENV_FILE"; fi; export "$1=$2"; }
 setenv STORAGE_PATH "$STORAGE"; setenv RECORDINGS_PATH "$STORAGE/recordings"; setenv HLS_PATH "$STORAGE/hls"
 
-ok "Environment loaded — API :${PORT:-3001}  storage $STORAGE"
+ok "Environment loaded — API :${PORT:-$CFG_API_PORT}  storage $STORAGE"
 
 # =============================================================================
 # STEP 2 — Prerequisites
@@ -254,7 +264,7 @@ fi
 # STEP 4 — Database
 # =============================================================================
 hdr "3/9  Database"
-DB_HOST="${DB_HOST:-localhost}"; DB_PORT="${DB_PORT:-5432}"
+DB_HOST="${DB_HOST:-$CFG_DB_HOST}"; DB_PORT="${DB_PORT:-$CFG_DB_PORT}"
 DB_NAME="${DB_NAME:-mnvr}";     DB_USER="${DB_USER:-mnvr}"; DB_PASSWORD="${DB_PASSWORD:-mnvr}"
 
 if $DO_SETUP; then
@@ -369,14 +379,14 @@ if [[ ! -f "$MTX_BIN" ]]; then
 fi
 
 if [[ -f "$MTX_BIN" ]]; then
-  warn "Starting MediaMTX (RTSP :8554, WebRTC :8889, HLS :8888, API :9997)..."
+  warn "Starting MediaMTX (RTSP :$CFG_MTX_RTSP, WebRTC :$CFG_MTX_WEBRTC, HLS :$CFG_MTX_HLS, API :$CFG_MTX_API)..."
   nohup "$MTX_BIN" "$MTX_DIR/mediamtx.yml" > "$LOG_DIR/mediamtx.log" 2>&1 &
   MTX_PID=$!
   pid_write "mediamtx" "$MTX_PID"
 
   # Wait for MediaMTX API to be ready
   for i in $(seq 1 20); do
-    curl -sf --max-time 2 "http://localhost:9997/v3/paths/list" >/dev/null 2>&1 && { ok "MediaMTX ready ✓  (${i}s)"; break; }
+    curl -sf --max-time 2 "http://$CFG_LOOPBACK_HOST:$CFG_MTX_API/v3/paths/list" >/dev/null 2>&1 && { ok "MediaMTX ready ✓  (${i}s)"; break; }
     if ! kill -0 "$MTX_PID" 2>/dev/null; then
       err "MediaMTX crashed — last 10 lines of logs/mediamtx.log:"
       tail -10 "$LOG_DIR/mediamtx.log" | sed 's/^/    /'
@@ -390,7 +400,7 @@ if [[ -f "$MTX_BIN" ]]; then
   warn "Starting mediamtx-sync (camera → stream path sync every 15s)..."
   DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" DB_NAME="$DB_NAME" \
   DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" \
-  MEDIAMTX_API="http://localhost:9997" \
+  MEDIAMTX_API="http://$CFG_LOOPBACK_HOST:$CFG_MTX_API" \
   SYNC_INTERVAL_SECS="15" \
   nohup "$VENV/bin/python" "$MTX_DIR/mediamtx-sync.py" > "$LOG_DIR/mtxsync.log" 2>&1 &
   pid_write "mtxsync" "$!"
@@ -406,7 +416,7 @@ fi
 hdr "8/9  API Server + Stream Manager"
 
 # API
-warn "Starting Node.js API on :${PORT:-3001}..."
+warn "Starting Node.js API on :${PORT:-$CFG_API_PORT}..."
 cd "$ROOT/backend/api"
 nohup node src/index.js > "$LOG_DIR/api.log" 2>&1 &
 API_PID=$!; pid_write "api" "$API_PID"; cd "$ROOT"
@@ -416,7 +426,7 @@ warn "Waiting for API..."
 for i in $(seq 1 30); do
   LAST=$(tail -1 "$LOG_DIR/api.log" 2>/dev/null | tr -d '\r' || true)
   [[ -n "$LAST" ]] && printf "\r    [%2ds] %-72s" "$i" "${LAST:0:72}"
-  if curl -sf --max-time 2 "http://localhost:${PORT:-3001}/api/health" >/dev/null 2>&1; then
+  if curl -sf --max-time 2 "http://$CFG_LOOPBACK_HOST:${PORT:-$CFG_API_PORT}/api/health" >/dev/null 2>&1; then
     echo ""; ok "API ready ✓  (${i}s)"; break
   fi
   if ! kill -0 "$API_PID" 2>/dev/null; then
@@ -434,7 +444,7 @@ if [[ -f "$STREAM_MGR" ]]; then
   DB_USER="${DB_USER}" DB_PASSWORD="${DB_PASSWORD}" \
   RECORDINGS_PATH="${STORAGE:-/storage}/recordings" \
   SEGMENT_SECONDS="${SEGMENT_SECONDS:-120}" \
-  MEDIAMTX_RTSP_HOST="127.0.0.1" MEDIAMTX_RTSP_PORT="8554" \
+  MEDIAMTX_RTSP_HOST="$CFG_LOOPBACK_HOST" MEDIAMTX_RTSP_PORT="$CFG_MTX_RTSP" \
   LIVE_VIDEO_CODEC="${LIVE_VIDEO_CODEC:-libx265}" \
   ARCHIVE_VIDEO_CODEC="${ARCHIVE_VIDEO_CODEC:-hevc_nvenc}" \
   ARCHIVE_RATE_MODE="${ARCHIVE_RATE_MODE:-corridor}" \
@@ -455,7 +465,7 @@ fi
 # STEP 10 — Frontend
 # =============================================================================
 hdr "9/9  Frontend"
-warn "Starting Vite on :8080..."
+warn "Starting Vite on :$CFG_UI_PORT..."
 # Vite listens on "::" (IPv4 + IPv6). A machine with IPv6 switched off refuses that ("EAFNOSUPPORT"), so fall back to IPv4 there.
 if node -e "require('net').createServer().listen(0,'::',function(){process.exit(0)}).on('error',function(){process.exit(1)})" 2>/dev/null; then export VITE_HOST="::"; else export VITE_HOST="0.0.0.0"; warn "IPv6 is not available here - the web page listens on IPv4 only"; fi
 cd "$ROOT/frontend"
@@ -466,10 +476,10 @@ ok "Frontend PID $FE_PID  (logs/frontend.log)"
 for i in $(seq 1 40); do
   LAST=$(tail -1 "$LOG_DIR/frontend.log" 2>/dev/null | tr -d '\r' || true)
   [[ -n "$LAST" ]] && printf "\r    [%2ds] %-72s" "$i" "${LAST:0:72}"
-  if curl -sf --max-time 2 http://localhost:8080 >/dev/null 2>&1; then
+  if curl -sf --max-time 2 http://$CFG_LOOPBACK_HOST:$CFG_UI_PORT >/dev/null 2>&1; then
     echo ""; ok "Frontend ready ✓  (${i}s)"; break
   fi
-  [[ $i -eq 40 ]] && { echo ""; warn "Frontend still loading — visit http://localhost:8080 shortly"; }
+  [[ $i -eq 40 ]] && { echo ""; warn "Frontend still loading — visit http://$CFG_LOOPBACK_HOST:$CFG_UI_PORT shortly"; }
   sleep 1
 done
 
@@ -583,16 +593,16 @@ if [[ "${SKIP_AI_SIDECAR:-false}" != true ]]; then
   # doesn't have fastapi/torch/etc installed here, and fails with
   # "ModuleNotFoundError: No module named 'fastapi'" even though the venv
   # above has everything it needs.
-  warn "Starting AI sidecar on :8000 (YOLO + CLIP)..."
+  warn "Starting AI sidecar on :$CFG_AI_PORT (YOLO + CLIP)..."
   cd "$AI_DIR"
-  nohup "$AI_VENV/bin/python" -m uvicorn sidecar:app --host 0.0.0.0 --port 8000 \
+  nohup "$AI_VENV/bin/python" -m uvicorn sidecar:app --host "$CFG_BIND_HOST" --port "$CFG_AI_PORT" \
     > "$LOG_DIR/sidecar.log" 2>&1 &
   pid_write "yolo" "$!"
   cd "$ROOT"
 
   warn "Waiting for AI sidecar..."
   for i in $(seq 1 60); do
-    curl -sf --max-time 2 "http://localhost:8000/health" >/dev/null 2>&1 && { ok "AI sidecar ready ✓  (${i}s)"; break; }
+    curl -sf --max-time 2 "http://$CFG_LOOPBACK_HOST:$CFG_AI_PORT/health" >/dev/null 2>&1 && { ok "AI sidecar ready ✓  (${i}s)"; break; }
     if ! pid_alive "yolo"; then
       err "AI sidecar crashed — last 15 lines of logs/sidecar.log:"
       tail -15 "$LOG_DIR/sidecar.log" | sed 's/^/    /'
@@ -610,10 +620,10 @@ if [[ "${SKIP_AI_SIDECAR:-false}" != true ]]; then
   # calls internally rather than requiring the API to already be ready.
   if [[ -f "$AI_DIR/indexer.py" ]]; then
     warn "Starting Smart Search indexer (samples live camera streams)..."
-    API_URL="http://localhost:${PORT:-3001}" \
+    API_URL="http://$CFG_LOOPBACK_HOST:${PORT:-$CFG_API_PORT}" \
     API_USER="${INDEXER_USER:-admin}" API_PASS="${INDEXER_PASS:-Admin@123}" \
-    YOLO_SIDECAR_URL="http://localhost:8000" \
-    MEDIAMTX_RTSP="localhost:8554" \
+    YOLO_SIDECAR_URL="http://$CFG_LOOPBACK_HOST:$CFG_AI_PORT" \
+    MEDIAMTX_RTSP="$CFG_LOOPBACK_HOST:$CFG_MTX_RTSP" \
     STORAGE_PATH="$STORAGE" \
     SAMPLE_INTERVAL_SECS="${SAMPLE_INTERVAL_SECS:-2}" \
     POLL_CAMERAS_SECS="${POLL_CAMERAS_SECS:-30}" \
@@ -706,8 +716,8 @@ else
     warn "Starting analytics worker (polls API for per-camera analytics)..."
     # Explicit env wins over analytics/.env, keeping API_URL / storage consistent with this launcher.
     ( cd "$AN_DIR" && \
-      API_URL="http://localhost:${PORT:-3001}" \
-      MEDIAMTX_RTSP="localhost:8554" \
+      API_URL="http://$CFG_LOOPBACK_HOST:${PORT:-$CFG_API_PORT}" \
+      MEDIAMTX_RTSP="$CFG_LOOPBACK_HOST:$CFG_MTX_RTSP" \
       STORAGE_PATH="$STORAGE" \
       nohup "$AN_VENV/bin/python" worker.py > "$LOG_DIR/analytics.log" 2>&1 &
       echo $! > "$PID_DIR/analytics.pid" )
@@ -730,14 +740,14 @@ echo -e "${C}${BOLD}"
 echo "  ╔══════════════════════════════════════════════════════════════╗"
 echo "  ║          ✅  Railway mNVR System Running                    ║"
 echo "  ╠══════════════════════════════════════════════════════════════╣"
-printf "  ║  %-60s║\n" "🌐 Frontend    →  http://localhost:8080"
-printf "  ║  %-60s║\n" "🔌 API         →  http://localhost:${PORT:-3001}/api"
-printf "  ║  %-60s║\n" "📖 API Docs    →  http://localhost:${PORT:-3001}/api/docs"
-printf "  ║  %-60s║\n" "📡 MediaMTX    →  http://localhost:9997  (API)"
-printf "  ║  %-60s║\n" "🎥 WebRTC      →  http://localhost:8889/cam_<id>/whep"
-printf "  ║  %-60s║\n" "📺 HLS         →  http://localhost:8888/cam_<id>/index.m3u8"
-printf "  ║  %-60s║\n" "📷 RTSP        →  rtsp://localhost:8554/cam_<id>"
-printf "  ║  %-60s║\n" "🧠 AI Sidecar  →  http://localhost:8000/health"
+printf "  ║  %-60s║\n" "🌐 Frontend    →  http://$CFG_LOOPBACK_HOST:$CFG_UI_PORT"
+printf "  ║  %-60s║\n" "🔌 API         →  http://$CFG_LOOPBACK_HOST:${PORT:-$CFG_API_PORT}/api"
+printf "  ║  %-60s║\n" "📖 API Docs    →  http://$CFG_LOOPBACK_HOST:${PORT:-$CFG_API_PORT}/api/docs"
+printf "  ║  %-60s║\n" "📡 MediaMTX    →  http://$CFG_LOOPBACK_HOST:$CFG_MTX_API  (API)"
+printf "  ║  %-60s║\n" "🎥 WebRTC      →  http://$CFG_LOOPBACK_HOST:$CFG_MTX_WEBRTC/cam_<id>/whep"
+printf "  ║  %-60s║\n" "📺 HLS         →  http://$CFG_LOOPBACK_HOST:$CFG_MTX_HLS/cam_<id>/index.m3u8"
+printf "  ║  %-60s║\n" "📷 RTSP        →  rtsp://$CFG_LOOPBACK_HOST:$CFG_MTX_RTSP/cam_<id>"
+printf "  ║  %-60s║\n" "🧠 AI Sidecar  →  http://$CFG_LOOPBACK_HOST:$CFG_AI_PORT/health"
 printf "  ║  %-60s║\n" "✨ Smart Search →  Search page → \"Smart Search (AI)\" tab"
 echo "  ╠══════════════════════════════════════════════════════════════╣"
 printf "  ║  %-60s║\n" "🔑 Login: admin / Admin@123"

@@ -15,7 +15,7 @@ router.get('/nvrs', wrap(async (req, res) => {
   const w = where(); w.params.push(cfg.nvr_offline_after_s);
   w.raw(zoneScope(req.user, 'n.current_zone_id', w.params, req.query.zone_id));
   const { rows } = await pool.query(
-    `SELECT n.id, n.name, n.train_no, n.status, n.firmware, n.current_zone_id AS zone_id, z.name AS zone_name, n.last_seen, n.last_lat AS lat, n.last_lon AS lon,
+    `SELECT n.id, n.name, n.train_no, COALESCE(n.unit_no, n.id) AS unit_no, n.status, n.firmware, n.current_zone_id AS zone_id, z.name AS zone_name, n.last_seen, n.last_lat AS lat, n.last_lon AS lon,
             n.last_speed_mps, n.health, (n.last_seen > now() - make_interval(secs => $1)) AS online,
             (SELECT COUNT(*) FROM camera c WHERE c.nvr_id = n.id AND c.active) AS cameras,
             (SELECT COUNT(*) FROM nvr_command m WHERE m.nvr_id = n.id AND m.status IN ('queued','sent','acked')) AS open_commands,
@@ -26,6 +26,25 @@ router.get('/nvrs', wrap(async (req, res) => {
   res.json(rows);
 }));
 
+/** GET /trains - every train (as reported by its M-NVR units' train numbers) with its units and camera counts. */
+router.get('/trains', wrap(async (req, res) => {
+  const cfg = await settings.all();
+  const w = where(); w.params.push(cfg.nvr_offline_after_s);
+  w.raw('n.train_no IS NOT NULL'); w.raw(zoneScope(req.user, 'n.current_zone_id', w.params, req.query.zone_id));
+  const { rows } = await pool.query(
+    `SELECT n.train_no, n.id AS nvr_id, n.name AS nvr_name, COALESCE(n.unit_no, n.id) AS unit_no, n.status, n.last_seen, (n.last_seen > now() - make_interval(secs => $1)) AS online,
+            (SELECT COUNT(*) FROM camera c WHERE c.nvr_id = n.id AND c.active) AS cameras,
+            (SELECT COUNT(*) FROM nvr_command m WHERE m.nvr_id = n.id AND m.status IN ('queued','sent','acked')) AS open_commands
+       FROM nvr_unit n ${w.sql()} ORDER BY n.train_no, 4`, w.params);
+  const byTrain = new Map();
+  for (const r of rows) {
+    const k = r.train_no.trim().toLowerCase();
+    if (!byTrain.has(k)) byTrain.set(k, { train_no: r.train_no, units: [] });
+    byTrain.get(k).units.push({ nvr_id: r.nvr_id, name: r.nvr_name, unit_no: r.unit_no, status: r.status, last_seen: r.last_seen, online: r.online, cameras: +r.cameras, open_commands: +r.open_commands });
+  }
+  res.json([...byTrain.values()].map((t) => ({ ...t, units_total: t.units.length, units_online: t.units.filter((u) => u.online).length, cameras_total: t.units.reduce((a, u) => a + u.cameras, 0) })));
+}));
+
 router.get('/nvrs/:id', wrap(async (req, res) => {
   const id = parseId(req.params.id);
   const { rows } = await pool.query(`SELECT n.*, z.name AS zone_name FROM nvr_unit n LEFT JOIN zone z ON z.id = n.current_zone_id WHERE n.id = $1`, [id]);
@@ -33,10 +52,10 @@ router.get('/nvrs/:id', wrap(async (req, res) => {
   if (!n || !canSeeZone(req.user, n.current_zone_id)) throw notFound('NVR not found');
   delete n.cert_fingerprint;
   const [cams, cmds, track, assign, segs] = await Promise.all([
-    pool.query(`SELECT c.id, c.name, c.mount_position, c.active,
+    pool.query(`SELECT c.id, c.name, COALESCE(c.mnvr_camera_id, c.id) AS camera_no, c.mount_position, c.active,
                        (SELECT MAX(end_time) FROM video_segment s WHERE s.camera_id = c.id AND s.upload_status = 'complete') AS last_segment,
                        (SELECT COUNT(*) FROM video_segment s WHERE s.camera_id = c.id AND s.upload_status = 'complete') AS segments
-                  FROM camera c WHERE c.nvr_id = $1 ORDER BY c.name`, [id]),
+                  FROM camera c WHERE c.nvr_id = $1 ORDER BY 3, c.name`, [id]),
     pool.query(`SELECT id, kind, status, camera_id, window_start, window_end, request_id, created_at, sent_at, completed_at, result FROM nvr_command WHERE nvr_id = $1 ORDER BY id DESC LIMIT 15`, [id]),
     pool.query(`SELECT ts, ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lon, speed_mps FROM gps_point WHERE nvr_id = $1 AND ts > now() - interval '6 hours' ORDER BY ts DESC LIMIT 300`, [id]),
     pool.query(`SELECT a.assigned_from, a.assigned_until, z.name AS zone_name FROM nvr_zone_assignment a JOIN zone z ON z.id = a.zone_id WHERE a.nvr_id = $1 ORDER BY a.assigned_from DESC`, [id]),

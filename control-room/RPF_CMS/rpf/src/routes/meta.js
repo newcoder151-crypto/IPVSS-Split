@@ -3,6 +3,7 @@ const { pool } = require('../db');
 const config = require('../config');
 const { wrap } = require('../errors');
 const { hasFfmpeg } = require('../services/clip');
+const { trainsInZone } = require('../services/trainRequests');
 
 const router = express.Router();
 
@@ -25,5 +26,8 @@ router.get('/cameras', wrap(async (req, res) => {
   );
   res.json(rows);
 }));
+
+// Trains this post may request footage for (by train number): each with its M-NVR units and cameras.
+router.get('/trains', wrap(async (req, res) => res.json(await trainsInZone(req.user.zone_id))));
 
 module.exports = router;

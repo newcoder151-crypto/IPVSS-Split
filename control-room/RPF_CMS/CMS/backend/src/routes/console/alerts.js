@@ -75,7 +75,7 @@ router.get('/alerts/:id', wrap(async (req, res) => {
                  WHERE d.alert_id = $1 AND d.alert_event_time = $2 ORDER BY d.id`, [a.id, a.event_time]),
     pool.query(`SELECT i.id, i.status, i.source, i.title, i.created_at, po.name AS post_name FROM incident i JOIN alert_delivery d ON d.id = i.alert_delivery_id JOIN rpf_post po ON po.id = i.post_id
                  WHERE d.alert_id = $1 AND d.alert_event_time = $2 ORDER BY i.id`, [a.id, a.event_time]),
-    pool.query(`SELECT r.id, r.status, r.window_start, r.window_end, po.name AS post_name FROM video_request r JOIN rpf_post po ON po.id = r.post_id WHERE r.alert_id = $1 ORDER BY r.id DESC`, [a.id]),
+    pool.query(`SELECT r.id, r.status, r.window_start, r.window_end, r.train_no, po.name AS post_name FROM train_request r JOIN rpf_post po ON po.id = r.post_id WHERE r.alert_id = $1 ORDER BY r.id DESC`, [a.id]),
     candidatePosts(null, a.id, { limit: 6 }),
     pool.query(`SELECT last_seen, health FROM nvr_unit WHERE id = $1`, [a.nvr_id]),
   ]);
@@ -127,7 +127,7 @@ const INCIDENT_LIST = `
          i.post_id, po.name AS post_name, po.zone_id, i.raised_by, ur.username AS raised_by_username,
          i.nvr_id, n.name AS nvr_name, n.train_no, i.camera_id, c.name AS camera_name,
          ST_Y(i.location::geometry) AS lat, ST_X(i.location::geometry) AS lon, i.alert_delivery_id,
-         (SELECT COUNT(*) FROM video_request r WHERE r.incident_id = i.id OR (i.alert_delivery_id IS NOT NULL AND r.alert_id = (SELECT alert_id FROM alert_delivery WHERE id = i.alert_delivery_id) AND r.post_id = i.post_id)) AS requests,
+         (SELECT COUNT(*) FROM train_request r WHERE r.incident_id = i.id OR (i.alert_delivery_id IS NOT NULL AND r.alert_id = (SELECT alert_id FROM alert_delivery WHERE id = i.alert_delivery_id) AND r.post_id = i.post_id)) AS requests,
          (SELECT COUNT(*) FROM evidence_flag e WHERE e.incident_id = i.id AND e.status = 'active') AS flags
     FROM incident i
     JOIN rpf_post po ON po.id = i.post_id
@@ -163,9 +163,9 @@ router.get('/incidents/:id', wrap(async (req, res) => {
   if (!i || !canSeeZone(req.user, i.zone_id)) throw notFound('incident not found');
   const { rows: det } = await pool.query(`SELECT description, closing_note FROM incident WHERE id = $1`, [id]);
   const [reqs, flags, notes, alert] = await Promise.all([
-    pool.query(`SELECT r.id, r.status, r.window_start, r.window_end, r.reason, c.name AS camera_name,
-                       (SELECT id FROM delivered_footage f WHERE f.video_request_id = r.id ORDER BY id DESC LIMIT 1) AS footage_id
-                  FROM video_request r JOIN camera c ON c.id = r.camera_id
+    pool.query(`SELECT r.id, r.status, r.window_start, r.window_end, r.reason, r.train_no, 'train ' || r.train_no AS camera_name,
+                       r.cameras_fulfilled, r.cameras_total, NULL::bigint AS footage_id
+                  FROM train_request r
                  WHERE r.incident_id = $1 OR (r.post_id = $2 AND r.alert_id IS NOT NULL AND r.alert_id = (SELECT alert_id FROM alert_delivery WHERE id = $3)) ORDER BY r.id DESC`, [id, i.post_id, i.alert_delivery_id]),
     pool.query(`SELECT e.id, e.retention, e.status, e.archive_status, e.section_start_s, e.section_end_s, e.justification FROM evidence_flag e WHERE e.incident_id = $1 ORDER BY e.id DESC`, [id]),
     pool.query(`SELECT a.occurred_at, a.action, a.details, u.username AS actor FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id

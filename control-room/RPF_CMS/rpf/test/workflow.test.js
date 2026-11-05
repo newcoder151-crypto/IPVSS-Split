@@ -54,6 +54,7 @@ test('RPF post dashboard against the shared CMS database', { skip: !enabled && '
   const postB = await mkPost('B', 81.5);
   const [nvr] = await q(`INSERT INTO nvr_unit (name, cert_fingerprint, current_zone_id) VALUES ($1, $2, $3) RETURNING id`, [`T-nvr-${sfx}`, `fp-${sfx}`, zone.id]);
   const [cam] = await q(`INSERT INTO camera (nvr_id, name) VALUES ($1, 'cam-1') RETURNING id`, [nvr.id]);
+  await q(`UPDATE nvr_unit SET train_no = $2 WHERE id = $1`, [nvr.id, `T-${sfx}`]);   // footage is requested by train number: this unit belongs to a train
   const mkUser = async (name, role, postId) => (await q(
     `INSERT INTO users (zone_id, post_id, role, username, password_hash) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
     [role === 'super_admin' ? null : zone.id, postId, role, `${name}-${sfx}`, hash]))[0];
@@ -202,9 +203,10 @@ test('RPF post dashboard against the shared CMS database', { skip: !enabled && '
     assert.equal(d.body.history.some((h) => h.note === 'acknowledged at RPF post'), false, 'nothing another post\'s officer did');
     const i = await call('GET', `/api/incidents/${incident.id}`, A);
     assert.ok(!JSON.stringify(i.body.timeline).includes('T-post-B'), 'the incident timeline is scrubbed the same way');
-    const soon = { camera_id: cam.id, window_start: new Date(Date.now() - 30 * 60000).toISOString(), window_end: new Date(Date.now() - 25 * 60000).toISOString(), reason: 'x' };
-    assert.equal((await call('POST', '/api/requests', A, { ...soon, incident_id: incidentB.id })).status, 404, 'a request cannot be hung on another post\'s incident');
-    assert.equal((await call('GET', `/api/incidents/${incident.id}`, A)).body.requests.every((r) => r.post_id === postA.id), true);
+    const [trn] = await q(`SELECT n.train_no FROM camera c JOIN nvr_unit n ON n.id = c.nvr_id WHERE c.id = $1`, [cam.id]);
+    const soon = { train_no: trn.train_no, window_start: new Date(Date.now() - 30 * 60000).toISOString(), window_end: new Date(Date.now() - 25 * 60000).toISOString(), reason: 'x' };
+    assert.equal((await call('POST', '/api/train-requests', A, { ...soon, incident_id: incidentB.id })).status, 404, 'a request cannot be hung on another post\'s incident');
+    assert.equal((await call('GET', `/api/incidents/${incident.id}`, A)).body.train_requests.every((r) => r.post_id === postA.id), true);
   });
 
   await t.test('acknowledge: once, only by the owning post, writes history', async () => {
@@ -226,39 +228,48 @@ test('RPF post dashboard against the shared CMS database', { skip: !enabled && '
     assert.deepEqual(d.body.history.map((h) => h.to_status), ['acknowledged']);
   });
 
-  let requestId;
-  await t.test('request footage: validation, duplicate guard, cancel', async () => {
+  let requestId; let trainRequestId;
+  await t.test('request footage BY TRAIN NUMBER: validation, duplicate guard, cancel', async () => {
+    const [trn] = await q(`SELECT n.train_no FROM camera c JOIN nvr_unit n ON n.id = c.nvr_id WHERE c.id = $1`, [cam.id]);
+    const post = (b) => call('POST', '/api/train-requests', A, b);
     const win = { window_start: new Date(Date.now() - 25 * 60000).toISOString(), window_end: new Date(Date.now() - 15 * 60000).toISOString() };
-    assert.equal((await call('POST', '/api/requests', A, { camera_id: cam.id, ...win })).status, 400, 'reason required');
     const hr = 3600000;
-    assert.equal((await call('POST', '/api/requests', A, { camera_id: cam.id, window_start: new Date(Date.now() - 6 * hr).toISOString(), window_end: new Date(Date.now() - 1 * hr).toISOString(), reason: 'x' })).status, 400, 'window longer than MAX_REQUEST_WINDOW_MIN');
-    assert.equal((await call('POST', '/api/requests', A, { camera_id: cam.id, window_start: new Date(Date.now() + hr).toISOString(), window_end: new Date(Date.now() + 2 * hr).toISOString(), reason: 'x' })).status, 400, 'window starting in the future');
-    assert.equal((await call('POST', '/api/requests', A, { camera_id: cam.id, window_start: win.window_end, window_end: win.window_start, reason: 'x' })).status, 400, 'end before start');
-    const [other] = await q(`SELECT c.id FROM camera c JOIN nvr_unit n ON n.id = c.nvr_id WHERE n.current_zone_id <> $1 LIMIT 1`, [zone.id]);
-    if (other) assert.equal((await call('POST', '/api/requests', A, { camera_id: other.id, ...win, reason: 'x' })).status, 400, 'camera outside zone');
+    assert.equal((await post({ train_no: trn.train_no, ...win })).status, 400, 'reason required');
+    assert.equal((await post({ ...win, reason: 'x' })).status, 400, 'a train number is required');
+    assert.equal((await post({ camera_id: cam.id, ...win, reason: 'x' })).status, 400, 'a camera is not a way to request footage any more');
+    assert.equal((await post({ train_no: trn.train_no, window_start: new Date(Date.now() - 6 * hr).toISOString(), window_end: new Date(Date.now() - 1 * hr).toISOString(), reason: 'x' })).status, 400, 'window longer than MAX_REQUEST_WINDOW_MIN');
+    assert.equal((await post({ train_no: trn.train_no, window_start: new Date(Date.now() + hr).toISOString(), window_end: new Date(Date.now() + 2 * hr).toISOString(), reason: 'x' })).status, 400, 'window starting in the future');
+    assert.equal((await post({ train_no: trn.train_no, window_start: win.window_end, window_end: win.window_start, reason: 'x' })).status, 400, 'end before start');
+    assert.equal((await post({ train_no: '00000 no-such-train', ...win, reason: 'x' })).status, 400, 'unknown train');
+    assert.equal((await call('POST', `/api/incidents/${incident.id}/requests`, A, { camera_id: cam.id, reason: 'old route' })).status, 404, 'the single-camera route is gone');
+    assert.equal((await call('GET', '/api/requests', A)).status, 404, 'so is the single-camera list');
 
-    const r = await call('POST', `/api/incidents/${incident.id}/requests`, A, { camera_id: cam.id, reason: 'intruder on platform' });
-    assert.equal(r.status, 201);
-    requestId = r.body.id;
-    assert.equal((await call('POST', `/api/incidents/${incident.id}/requests`, A, { camera_id: cam.id, reason: 'again' })).status, 409);
-    assert.equal((await call('POST', `/api/incidents/${incidentB.id}/requests`, A, { camera_id: cam.id, reason: 'x' })).status, 404);
-
-    assert.equal((await call('POST', `/api/requests/${requestId}/cancel`, A)).status, 200);
-    assert.equal((await call('POST', `/api/requests/${requestId}/cancel`, A)).status, 409);
-    const again = await call('POST', `/api/incidents/${incident.id}/requests`, A, { camera_id: cam.id, reason: 'take two' });
+    const r = await post({ train_no: trn.train_no, ...win, reason: 'intruder on platform', incident_id: incident.id });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    trainRequestId = r.body.id;
+    assert.equal((await post({ train_no: trn.train_no, ...win, reason: 'again', incident_id: incident.id })).status, 409);
+    assert.equal((await post({ train_no: trn.train_no, ...win, reason: 'x', incident_id: incidentB.id })).status, 404);
+    assert.equal((await call('POST', `/api/train-requests/${trainRequestId}/cancel`, A)).status, 200);
+    assert.equal((await call('POST', `/api/train-requests/${trainRequestId}/cancel`, A)).status, 409);
+    const again = await post({ train_no: trn.train_no, ...win, reason: 'take two', incident_id: incident.id });
     assert.equal(again.status, 201);
-    requestId = again.body.id;
+    trainRequestId = again.body.id;
   });
 
   // CMS side: operator approves, ingest delivers one stitched file.
   const content = crypto.randomBytes(5000);
   const sha = crypto.createHash('sha256').update(content).digest('hex');
+  // CMS approves and fans the train request out: one request per camera (here: the test's one camera)
+  await q(`UPDATE train_request SET status = 'approved', operator_id = $2, decided_at = now() WHERE id = $1`, [trainRequestId, op.id]);
+  [{ id: requestId }] = await q(`INSERT INTO video_request (post_id, requested_by, camera_id, window_start, window_end, reason, incident_id, train_request_id)
+     SELECT post_id, requested_by, $2, window_start, window_end, reason, incident_id, id FROM train_request WHERE id = $1 RETURNING id`, [trainRequestId, cam.id]);
   fs.writeFileSync(path.join(tmpMedia, `req-${requestId}.mp4`), content);
   await q(`UPDATE video_request SET status = 'approved', operator_id = $2, decided_at = now() WHERE id = $1`, [requestId, op.id]);
   const [footage] = await q(
-    `INSERT INTO delivered_footage (video_request_id, storage_path, format, sha256, file_size_bytes) VALUES ($1, $2, 'MP4', $3, $4) RETURNING id`,
-    [requestId, `req-${requestId}.mp4`, sha, content.length]);
+    `INSERT INTO delivered_footage (video_request_id, storage_path, format, sha256, file_size_bytes, train_request_id) VALUES ($1, $2, 'MP4', $3, $4, $5) RETURNING id`,
+    [requestId, `req-${requestId}.mp4`, sha, content.length, trainRequestId]);
   await q(`UPDATE video_request SET status = 'fulfilled' WHERE id = $1`, [requestId]);
+  await q(`UPDATE train_request SET status = 'fulfilled' WHERE id = $1`, [trainRequestId]);
 
   await t.test('footage: listed, gated by scope, served via short-lived link with range + integrity', async () => {
     const sum = await call('GET', '/api/alerts/summary', A);
@@ -326,7 +337,7 @@ test('RPF post dashboard against the shared CMS database', { skip: !enabled && '
     assert.equal((await call('GET', '/api/admin/audit', A)).status, 404, 'the admin API no longer exists');
     const audit = await call('GET', '/api/audit?limit=200', A);
     const actions = new Set(audit.body.map((a) => a.action));
-    for (const a of ['auth.login', 'alert.ack', 'request.create', 'request.cancel', 'footage.view', 'footage.download',
+    for (const a of ['auth.login', 'alert.ack', 'train_request.create', 'train_request.cancel', 'footage.view', 'footage.download',
       'footage.download.served', 'footage.flag', 'incident.status']) {
       assert.ok(actions.has(a), `audit log is missing ${a}`);
     }

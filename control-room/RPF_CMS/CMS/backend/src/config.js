@@ -10,15 +10,16 @@ if (jwtSecret.length < 32) { jwtSecret = crypto.randomBytes(48).toString('hex');
 
 module.exports = {
   version: '0.2.1',
-  port: int('PORT', 7080),
+  // Hosts, ports and database names are NOT defaulted here: config/control-room.conf is the one place, start.sh hands them over (see main() in server.js).
+  port: process.env.PORT ? Number(process.env.PORT) : undefined,
   // If the port is taken, try the next ones (development). Off in production, or with PORT_AUTO=0.
-  portAuto: process.env.PORT_AUTO ? process.env.PORT_AUTO === '1' : process.env.NODE_ENV !== 'production',
+  portAuto: process.env.PORT_AUTO === '1',   // off unless asked for: the port is fixed (config/control-room.conf), the server never wanders to port+1
   env: process.env.NODE_ENV || 'development',
   db: {
-    host: process.env.DB_HOST || 'localhost',
-    port: int('DB_PORT', 5432),
-    database: process.env.DB_NAME || 'cms',
-    user: process.env.DB_USER || 'cms',
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT ? Number(process.env.DB_PORT) : undefined,
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
   },
   jwtSecret, ephemeralSecret,
@@ -35,7 +36,7 @@ module.exports = {
     low_priority_mode: ['auto_deliver', 'operator_queue'].includes(process.env.LOW_PRIORITY_MODE) ? process.env.LOW_PRIORITY_MODE : 'auto_deliver',   // alerts below the threshold: deliver to the nearest post, or hold for an operator
     request_max_window_min: int('MAX_REQUEST_WINDOW_MIN', 240),
     retention_days: int('RETENTION_DAYS', 30),          // 30-day FIFO on raw segments
-    request_expiry_days: int('REQUEST_EXPIRY_DAYS', 25),// a request waiting this long for its NVR expires
+    request_expiry_days: int('REQUEST_EXPIRY_DAYS', 0),// 0 = never: a request waits for its NVR however long it takes (>0 = give up after this many days)
     nvr_offline_after_s: int('NVR_OFFLINE_AFTER_S', 60),
     auto_approve_requests: process.env.AUTO_APPROVE_REQUESTS === '1',
     retention_auto: process.env.RETENTION_AUTO !== '0',

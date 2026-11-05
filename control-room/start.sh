@@ -12,8 +12,8 @@
 #   bash start.sh --demo-data      (with start) also load demo zones/posts/logins into a fresh CMS
 #
 # The train (M-NVR + bridge) runs on ANOTHER PC: see ../train/start.sh. The bridge talks to this PC exactly as before:
-#   HTTP        http://<this-pc>:7080/nvr/v1     heartbeat, GPS, alerts, footage upload   (CMS)
-#   PostgreSQL  <this-pc>:5432                   its one-time self-registration rows      (database "cms")
+#   HTTP        http://<this-pc>:<CMS_PORT>/nvr/v1    heartbeat, GPS, alerts, footage upload   (CMS)
+#   PostgreSQL  <this-pc>:<DB_PORT>              its one-time self-registration rows      (database "cms")
 # Needs: Linux with Node 18+, PostgreSQL 15+ with PostGIS, ffmpeg, psql, curl (installed for you if sudo allows).
 # =============================================================================
 set -uo pipefail
@@ -24,16 +24,30 @@ say(){ printf '\033[32m==>\033[0m %s\n' "$*"; }; warn(){ printf '\033[33mwarn:\0
 envget(){ [[ -f "$1" ]] && grep -E "^$2=" "$1" | tail -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//'; }
 wait_url(){ for _ in $(seq 1 "${3:-90}"); do curl -fs -m 2 -o /dev/null "$1" && return 0; sleep 1; done; return 1; }
 
+# ---- settings: hosts, ports, database names live in config/control-room.conf (nothing is hard-coded in this script) -----------
+CFG="${IPVSS_CONFIG:-$ROOT/config/control-room.conf}"
+[[ -r "$CFG" ]] || die "config file not found: $CFG   (it holds this PC's ports and hosts; restore it from the project, or point IPVSS_CONFIG at yours)"
+cfg(){ grep -E "^$1=" "$CFG" | tail -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//'; }
+cfg_need(){ local v="${!1:-}"; [[ -n "$v" ]] || v="$(cfg "$1")"; [[ -n "$v" ]] || die "$1 is not set in $CFG"; printf '%s' "$v"; }
+CFG_LOOPBACK_HOST="$(cfg_need LOOPBACK_HOST)"; CFG_DB_HOST="$(cfg_need DB_HOST)"; CFG_DB_PORT="$(cfg_need DB_PORT)"
+CFG_DB_NAME="$(cfg_need DB_NAME)"; CFG_DB_USER="$(cfg_need DB_USER)"; CFG_DB_ADMIN_USER="$(cfg_need DB_ADMIN_USER)"
+CFG_CMS_PORT="$(cfg_need CMS_PORT)"; CFG_RPF_PORT="$(cfg_need RPF_PORT)"; CFG_LOCAL_HOSTS="$(cfg_need LOCAL_HOST_NAMES)"
+CFG_PREFERRED_PREFIX="${PREFERRED_NETWORK_PREFIX:-$(cfg PREFERRED_NETWORK_PREFIX)}"; CFG_SKIP_PREFIXES="${SKIP_NETWORK_PREFIXES:-$(cfg SKIP_NETWORK_PREFIXES)}"
+
 
 # ---- this PC's address, as shown in the messages and shown in the messages ------------------------------------------------
-# Order: --ip <address> (saved in data/host-ip) or HOST_IP; else the address in 172.210.140.x; else any address that is not 192.168.x /
+# Order: --ip <address> (saved in data/host-ip) or HOST_IP; else an address starting with PREFERRED_NETWORK_PREFIX (config/control-room.conf); else any address not starting with SKIP_NETWORK_PREFIXES /
 # docker / loopback; else the first one. (A PC with several network cards no longer prints the wrong one.)
 my_ip() {
-  local f="$ROOT/data/host-ip" ip ips; ips="$(hostname -I 2>/dev/null)"
+  local f="$ROOT/data/host-ip" ip ips p skip; ips="$(hostname -I 2>/dev/null)"
   [[ -n "${HOST_IP:-}" ]] && { echo "$HOST_IP"; return; }
   [[ -s "$f" ]] && { head -n1 "$f"; return; }
-  for ip in $ips; do [[ "$ip" == 172.210.140.* ]] && { echo "$ip"; return; }; done
-  for ip in $ips; do case "$ip" in 192.168.*|172.17.*|172.18.*|127.*|169.254.*|*:*) ;; *.*.*.*) echo "$ip"; return;; esac; done
+  if [[ -n "$CFG_PREFERRED_PREFIX" ]]; then for ip in $ips; do [[ "$ip" == "$CFG_PREFERRED_PREFIX"* ]] && { echo "$ip"; return; }; done; fi
+  for ip in $ips; do
+    [[ "$ip" == *:* || "$ip" != *.*.*.* ]] && continue
+    skip=0; for p in $CFG_SKIP_PREFIXES; do [[ "$ip" == "$p"* ]] && skip=1; done
+    [[ $skip -eq 0 ]] && { echo "$ip"; return; }
+  done
   echo "${ips%% *}"
 }
 
@@ -80,11 +94,11 @@ ensure_system() {
   for c in "${missing[@]}"; do command -v "$c" >/dev/null || die "$c is not installed. Run:  sudo apt install -y ${pk[*]}   (then run start.sh again)"; done
 }
 ensure_postgres() {
-  if command -v pg_isready >/dev/null && pg_isready -q -h localhost 2>/dev/null; then return 0; fi
+  if command -v pg_isready >/dev/null && pg_isready -q -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" 2>/dev/null; then return 0; fi
   say "starting PostgreSQL"
   { $SUDO systemctl start postgresql || $SUDO service postgresql start; } >/dev/null 2>&1 || true
-  for _ in 1 2 3 4 5 6 7 8; do pg_isready -q -h localhost 2>/dev/null && return 0; sleep 1; done
-  warn "PostgreSQL is not answering on localhost:5432 - install/start it (sudo apt install postgresql postgis) and run start.sh again"
+  for _ in 1 2 3 4 5 6 7 8; do pg_isready -q -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" 2>/dev/null && return 0; sleep 1; done
+  warn "PostgreSQL is not answering on $CFG_DB_HOST:$CFG_DB_PORT - install/start it (sudo apt install postgresql postgis) and run start.sh again"
 }
 
 # ---- npm packages: install whatever is missing (the individual launchers only install when node_modules is absent) -------
@@ -120,7 +134,7 @@ pg_su(){
   if [[ $EUID -eq 0 ]]; then ( cd /tmp && runuser -u postgres -- psql -qtAc "$sql" ) 2>/dev/null && return 0
   elif command -v sudo >/dev/null; then ( cd /tmp && sudo -u postgres psql -qtAc "$sql" ) 2>/dev/null && return 0; fi
   sp="$(envget "$RPFD/.env" PG_SUPERUSER_PASSWORD)"; su="$(envget "$RPFD/.env" PG_SUPERUSER)"
-  [[ -n "$sp" ]] && PGPASSWORD="$sp" psql -h localhost -U "${su:-postgres}" -d postgres -qtAc "$sql" 2>/dev/null
+  [[ -n "$sp" ]] && PGPASSWORD="$sp" psql -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" -U "${su:-$CFG_DB_ADMIN_USER}" -d postgres -qtAc "$sql" 2>/dev/null
 }
 fix_cms_role(){   # make .env and the PostgreSQL role agree on the password "cms"
   local u; u="$(envget "$RPFD/.env" DB_USER)"; u="${u:-cms}"
@@ -133,7 +147,7 @@ fix_cms_role(){   # make .env and the PostgreSQL role agree on the password "cms
 ensure_cms_db_password(){
   local u; u="$(envget "$RPFD/.env" DB_USER)"; u="${u:-cms}"
   local f; for f in "$RPFD/.env" "$CMSD/backend/.env" "$ROOT/.env"; do setkv "$f" DB_PASSWORD "$CMS_DB_PW"; done
-  PGPASSWORD="$CMS_DB_PW" psql -h localhost -U "$u" -d postgres -tAc 'select 1' >/dev/null 2>&1 && return 0
+  PGPASSWORD="$CMS_DB_PW" psql -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" -U "$u" -d postgres -tAc 'select 1' >/dev/null 2>&1 && return 0
   fix_cms_role
 }
 
@@ -150,6 +164,22 @@ setup_media() {
   done
   for f in "$RPFD/.env" "$CMSD/backend/.env" "$ROOT/.env"; do setkv "$f" MEDIA_ROOT "$MEDIA_DIR"; done
   export MEDIA_ROOT="$MEDIA_DIR"      # an exported value wins over .env for every process started below, also on a first run
+  fix_media_permissions
+}
+
+# The CMS must be able to create files in every footage folder. Folders made by an earlier run with sudo / another user, or copied in
+# from an old install, are readable but not writable: every train upload then fails with "EACCES permission denied". Repaired here on each start.
+unwritable_in_media() { find "$MEDIA_DIR" \( -type d ! -writable -o -type f -name '*.part' ! -writable \) -print -quit 2>/dev/null; }
+fix_media_permissions() {
+  local bad me; me="$(id -un)"; bad="$(unwritable_in_media)"; [[ -z "$bad" ]] && return 0
+  warn "the footage folder has items '$me' cannot write to (for example ${bad#$MEDIA_DIR/}) - made by another user or an earlier sudo run; repairing"
+  chmod -R u+rwX "$MEDIA_DIR" 2>/dev/null; bad="$(unwritable_in_media)"
+  if [[ -n "$bad" ]]; then
+    if [[ $EUID -ne 0 ]] && command -v sudo >/dev/null; then sudo chown -R "$(id -u):$(id -g)" "$MEDIA_DIR" && sudo chmod -R u+rwX "$MEDIA_DIR"; fi
+    bad="$(unwritable_in_media)"
+  fi
+  if [[ -z "$bad" ]]; then say "footage folder permissions repaired ($MEDIA_DIR)"; else
+    warn "still not writable: ${bad#$MEDIA_DIR/} - train uploads will fail. Run once:  sudo chown -R $me $MEDIA_DIR"; fi
 }
 
 # Old copies of CMS / RPF / bridge / M-NVR API left running from ANOTHER folder (an earlier install) keep their own footage
@@ -176,8 +206,8 @@ retire_foreign_services() {
 # after start-up: does the CMS that is really running store footage where RPF and this script expect it?
 verify_media() {
   local cms rpf
-  cms="$(curl -fs -m 3 "http://localhost:$CMS_PORT/health" 2>/dev/null | sed -n 's/.*"media_root":"\([^"]*\)".*/\1/p')"
-  rpf="$(curl -fs -m 3 "http://localhost:$(envget "$RPFD/.env" PORT || echo 7090)/health" 2>/dev/null | sed -n 's/.*"media_root":"\([^"]*\)".*/\1/p')"
+  cms="$(curl -fs -m 3 "http://$CFG_LOOPBACK_HOST:$CMS_PORT/health" 2>/dev/null | sed -n 's/.*"media_root":"\([^"]*\)".*/\1/p')"
+  rpf="$(curl -fs -m 3 "http://$CFG_LOOPBACK_HOST:$CFG_RPF_PORT/health" 2>/dev/null | sed -n 's/.*"media_root":"\([^"]*\)".*/\1/p')"
   [[ -n "$cms" && "$cms" == "$MEDIA_DIR" && "$rpf" == "$MEDIA_DIR" ]] && { say "footage folder OK: CMS and RPF both use $MEDIA_DIR"; return 0; }
   warn "footage folders differ - CMS: ${cms:-?}   RPF: ${rpf:-?}   expected: $MEDIA_DIR   (RPF follows the CMS automatically; details: bash start.sh diagnose-footage)"
 }
@@ -194,7 +224,7 @@ do_check_footage() {
     hit="$(find "$ROOT" /storage "$HOME" -xdev -maxdepth 12 \( -name node_modules -o -name .git -o -name .venv -o -name .cache \) -prune -o -type f -path "*/$path" -not -path "$MEDIA_DIR/*" -print 2>/dev/null | head -n1)"
     if [[ -n "$hit" ]] && mkdir -p "$(dirname "$MEDIA_DIR/$path")" && cp "$hit" "$MEDIA_DIR/$path"; then fixed=$((fixed+1)); echo "  recovered #$id  $path   (found in $hit)"
     else bad=$((bad+1)); [[ -z "$quiet" ]] && echo "  missing:  #$id  $path"; fi
-  done < <(PGPASSWORD="$p" psql -h localhost -U "$u" -d "$n" -tA -F'|' -c "SELECT id, storage_path FROM delivered_footage ORDER BY id" 2>/dev/null)
+  done < <(PGPASSWORD="$p" psql -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" -U "$u" -d "$n" -tA -F'|' -c "SELECT id, storage_path FROM delivered_footage ORDER BY id" 2>/dev/null)
   [[ -n "$quiet" && $bad -eq 0 && $fixed -eq 0 ]] && return 0
   [[ -n "$quiet" ]] && { echo "  footage check: $fixed file(s) recovered, $bad delivered file(s) not on this machine (list them: bash start.sh check-footage)"; return 0; }
   echo "  $total delivered file(s) in the database: $fixed recovered, $bad still missing."
@@ -210,35 +240,94 @@ do_diagnose_footage() {
     cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null)"
     echo "  running ${cwd#$ROOT/} (pid $pid): MEDIA_ROOT=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^MEDIA_ROOT=//p')"
   done
-  local cp; cp="$(envget "$RPFD/.env" CMS_PORT)"; cp="${cp:-7080}"
-  for f in "$cp" "$(envget "$RPFD/.env" PORT)"; do [[ -n "$f" ]] && echo "  /health on :$f -> $(curl -fs -m 3 "http://localhost:$f/health" 2>/dev/null | cut -c1-300)"; done
+  local cp; cp="$CFG_CMS_PORT"
+  for f in "$cp" "$CFG_RPF_PORT"; do [[ -n "$f" ]] && echo "  /health on :$f -> $(curl -fs -m 3 "http://$CFG_LOOPBACK_HOST:$f/health" 2>/dev/null | cut -c1-300)"; done
   echo "  files in the footage folder:"; find "$MEDIA_DIR" -type f 2>/dev/null | head -n 20 | sed 's/^/    /'
   echo "  any req-*.mp4 elsewhere:"; find "$ROOT" /storage -xdev -maxdepth 8 \( -name node_modules -o -name .git \) -prune -o -type f -name 'req-*.mp4' -print 2>/dev/null | head -n 10 | sed 's/^/    /'
   local u p n; u="$(envget "$RPFD/.env" DB_USER)"; u="${u:-cms}"; n="$(envget "$RPFD/.env" DB_NAME)"; n="${n:-cms}"; p="$(envget "$RPFD/.env" DB_PASSWORD)"; p="${p:-$CMS_DB_PW}"
-  echo "  latest delivered_footage rows:"; PGPASSWORD="$p" psql -h localhost -U "$u" -d "$n" -x -c "SELECT * FROM delivered_footage ORDER BY id DESC LIMIT 2" 2>&1 | head -n 40 | sed 's/^/    /'
+  echo "  latest delivered_footage rows:"; PGPASSWORD="$p" psql -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" -U "$u" -d "$n" -x -c "SELECT * FROM delivered_footage ORDER BY id DESC LIMIT 2" 2>&1 | head -n 40 | sed 's/^/    /'
   echo "  log lines about uploads / footage / media (last 25):"
   grep -hiE "upload|footage|media|req-[0-9]+|stitch|no such file" "$LOGS"/*.log "$RPFD"/logs/*.log "$CMSD"/logs/*.log "$CMSD"/backend/logs/*.log 2>/dev/null | tail -n 25 | cut -c1-220 | sed 's/^/    /'
   return 0
 }
 
-# ---- allow-train: let ONE train PC's bridge log in to this PC's CMS database ----------------------------------------------------
-# The bridge writes its registration rows (nvr_unit, nvr_zone_assignment, camera) straight into the CMS database, as it always did;
-# on one PC that was "localhost", with two PCs PostgreSQL must listen on the network and accept that PC. Only the given address
-# (and only role/database of the CMS) is opened. Footage, alerts and heartbeats go over HTTP to the CMS port and need nothing here.
+# ---- trains are allowed IN by themselves ------------------------------------------------------------------------------------------
+# The bridge of every train PC writes its registration rows (nvr_unit, camera) straight into the CMS database and sends footage/alerts over
+# HTTP to the CMS port. On start this script therefore opens, for the train network(s), exactly: the CMS database (pg_hba.conf, only the CMS role
+# and database; PostgreSQL listens on the network) and - when ufw is active - the database port and the CMS port. Nothing to run by hand.
+#   ALLOW_TRAIN_NETWORKS in config/control-room.conf:   auto = the network of THIS PC's address (found here, from its own IP)
+#                                                         10.1.2.0/24 10.1.3.0/24 = exactly these networks      none = open nothing
+#   MANAGE_FIREWALL: auto = add ufw rules when ufw is active, yes/no = always/never
+# "bash start.sh allow-train [<ip|network/bits>]" stays for adding one more PC or network by hand.
+own_network() { # the network (address/bits) of this PC's chosen address
+  local mine own=""; mine="$(my_ip)"
+  own="$(ip -o -4 addr show 2>/dev/null | awk '{print $4}' | grep "^$mine/" | head -n1)"
+  if [[ -n "$own" ]] && command -v python3 >/dev/null; then own="$(python3 -c 'import ipaddress,sys;print(ipaddress.ip_interface(sys.argv[1]).network)' "$own" 2>/dev/null)"; else own=""; fi
+  [[ -n "$own" ]] || { [[ "$mine" == *.*.*.* ]] && own="${mine%.*}.0/24"; }
+  echo "$own"
+}
+
+# allow_network <ip|address/bits> - idempotent; says nothing when everything is already in place
+allow_network() {
+  local ip="$1"
+  [[ "$ip" =~ ^[0-9a-fA-F:.]+(/[0-9]+)?$ ]] || die "not an address or network: $ip   (usage: bash start.sh allow-train [<ip> | <network/bits>])"
+  [[ "$ip" == */* ]] || { [[ "$ip" == *:* ]] && ip="$ip/128" || ip="$ip/32"; }
+  local u n; u="$(envget "$RPFD/.env" DB_USER)"; u="${u:-$CFG_DB_USER}"; n="$(envget "$RPFD/.env" DB_NAME)"; n="${n:-$CFG_DB_NAME}"
+  local PS=""; [[ $EUID -ne 0 ]] && PS="sudo"     # (may ask for your password here, in the foreground)
+  local hba la; hba="$(pg_su "SHOW hba_file")"; la="$(pg_su "SHOW listen_addresses")"
+  [[ -n "$hba" ]] || die "cannot reach PostgreSQL as its superuser (run with sudo access). Manual steps: README.md, 'Database access for the train'"
+  local line="host    $n    $u    $ip    md5"       # md5 = scram-sha-256 or md5, whichever the role's password is stored as
+  local changed=0 restart=0
+  # 1. pg_hba.conf: one line per allowed network
+  if ! $PS grep -qE "^host[[:space:]]+$n[[:space:]]+$u[[:space:]]+${ip//\//\\/}[[:space:]]" "$hba" 2>/dev/null; then
+    printf '\n# IPVSS train bridge (added by start.sh)\n%s\n' "$line" | $PS tee -a "$hba" >/dev/null || die "cannot write $hba - add this line yourself:  $line"
+    say "trains allowed: $ip  (added to $hba)"; changed=1
+  fi
+  # 2. listen on the network (needs one PostgreSQL restart, only done when really needed)
+  if [[ -z "$la" ]] || { for h in $CFG_LOCAL_HOSTS; do [[ "$la" == "$h" ]] && la=""; done; [[ -z "$la" ]]; }; then
+    pg_su "ALTER SYSTEM SET listen_addresses = '*'" >/dev/null || die "cannot set listen_addresses - set  listen_addresses = '*'  in postgresql.conf and restart PostgreSQL"
+    restart=1
+  fi
+  if [[ $restart == 1 ]]; then
+    say "PostgreSQL restarts once to listen on the network (CMS/RPF reconnect by themselves; if not:  bash start.sh restart)"
+    { $PS systemctl restart postgresql || $PS service postgresql restart; } >/dev/null 2>&1 || warn "could not restart PostgreSQL - restart it yourself"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do pg_isready -q -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" 2>/dev/null && break; sleep 1; done
+  elif [[ $changed == 1 ]]; then
+    pg_su "SELECT pg_reload_conf()" >/dev/null && say "PostgreSQL reloaded"
+  fi
+  # 3. the firewall (ufw), when there is one in use
+  local fw="${MANAGE_FIREWALL:-$(cfg MANAGE_FIREWALL)}"; fw="${fw:-auto}"; local src="$ip"
+  if [[ "$fw" != "no" ]] && command -v ufw >/dev/null 2>&1 && { [[ "$fw" == "yes" ]] || $PS ufw status 2>/dev/null | grep -q "^Status: active"; }; then
+    local p; for p in "$CFG_DB_PORT" "$CFG_CMS_PORT"; do $PS ufw allow from "$src" to any port "$p" proto tcp >/dev/null 2>&1 || warn "could not add the ufw rule for $src port $p"; done
+  elif [[ "$fw" != "no" ]]; then
+    :   # no ufw in use: nothing to open here (another firewall, if any, must allow $CFG_DB_PORT and $CFG_CMS_PORT from the train network)
+  fi
+  return 0
+}
+
+# on every start: allow the configured train networks (default: this PC's own network)
+auto_allow_trains() {
+  local want="${ALLOW_TRAIN_NETWORKS:-$(cfg ALLOW_TRAIN_NETWORKS)}"; want="${want:-auto}"
+  [[ "$want" == "none" ]] && { say "no train network is opened automatically (ALLOW_TRAIN_NETWORKS=none in $CFG)"; return 0; }
+  local nets="$want" net
+  if [[ "$want" == "auto" ]]; then
+    nets="$(own_network)"
+    [[ -n "$nets" ]] || { warn "could not work out this PC's network - trains are not opened automatically; set ALLOW_TRAIN_NETWORKS in $CFG (or run: bash start.sh allow-train <network/bits>)"; return 0; }
+  fi
+  for net in $nets; do ( allow_network "$net" ) || warn "could not open $net for trains"; done
+  TRAIN_NETS="$nets"
+}
+
+# manual: one more PC or network
 do_allow_train() {
   local ip="${1:-}"
-  [[ -t 0 && ! -s "$ROOT/data/host-ip" ]] && pick_ip
   if [[ -z "$ip" || "$ip" == "lan" || "$ip" == "all" ]]; then
-    # the network of THIS PC's chosen address (shown as an option; you can type any other)
-    local mine own=""; mine="$(my_ip)"
-    own="$(ip -o -4 addr show 2>/dev/null | awk '{print $4}' | grep "^$mine/" | head -n1)"
-    if [[ -n "$own" ]] && command -v python3 >/dev/null; then own="$(python3 -c 'import ipaddress,sys;print(ipaddress.ip_interface(sys.argv[1]).network)' "$own" 2>/dev/null)"; else own=""; fi
-    [[ -n "$own" ]] || { [[ "$mine" == *.*.*.* ]] && own="${mine%.*}.0/24"; }
+    local own; own="$(own_network)"
     if [[ -t 0 ]]; then
       echo "  Which PC(s) may connect as a train?"
       echo "    1) one train PC          (you type its IP address)"
       [[ -n "$own" ]] && echo "    2) the whole network      $own    (this PC's own network)"
-      echo "    3) another network       (you type it, e.g. 172.210.140.0/24)"
+      echo "    3) another network       (you type it as address/bits)"
       local c; read -r -p "  choose [1-3]: " c
       case "$c" in
         1) read -r -p "  train PC's IP address: " ip;;
@@ -247,48 +336,18 @@ do_allow_train() {
         *) die "nothing chosen";;
       esac
     else
-      ip="$own"; [[ -n "$ip" ]] || die "give the train PC's IP (or a network) explicitly, e.g.  bash start.sh allow-train 172.210.140.50"
+      ip="$own"; [[ -n "$ip" ]] || die "give the train PC's IP (or a network) explicitly:  bash start.sh allow-train <ip|network/bits>"
     fi
-    say "allowing $ip"
   fi
-  [[ "$ip" =~ ^[0-9a-fA-F:.]+(/[0-9]+)?$ ]] || die "usage:  bash start.sh allow-train [<train-pc-ip> | <network/bits>]    e.g.  allow-train 172.210.140.50   or   allow-train 172.210.140.0/24   (no argument: asks)"
-  [[ "$ip" == */* ]] || { [[ "$ip" == *:* ]] && ip="$ip/128" || ip="$ip/32"; }
-  local u n; u="$(envget "$RPFD/.env" DB_USER)"; u="${u:-cms}"; n="$(envget "$RPFD/.env" DB_NAME)"; n="${n:-cms}"
-  local PS=""; [[ $EUID -ne 0 ]] && PS="sudo"     # (may ask for your password here, in the foreground)
-  local hba la; hba="$(pg_su "SHOW hba_file")"; la="$(pg_su "SHOW listen_addresses")"
-  [[ -n "$hba" ]] || die "cannot reach PostgreSQL as its superuser (run with sudo access). Manual steps: README.md, 'Database access for the train'"
-  local line="host    $n    $u    $ip    md5"       # md5 = scram-sha-256 or md5, whichever the role's password is stored as
-  local changed=0 restart=0
-  # 1. pg_hba.conf: one line for this train only
-  if $PS grep -qE "^host[[:space:]]+$n[[:space:]]+$u[[:space:]]+${ip//\//\\/}[[:space:]]" "$hba" 2>/dev/null; then
-    say "pg_hba.conf already allows $ip"
-  else
-    printf '\n# IPVSS train bridge (added by start.sh allow-train)\n%s\n' "$line" | $PS tee -a "$hba" >/dev/null || die "cannot write $hba - add this line yourself:  $line"
-    say "added to $hba:  $line"; changed=1
-  fi
-  # 2. listen on the network (needs one PostgreSQL restart, only done when really needed)
-  if [[ "$la" == "localhost" || "$la" == "127.0.0.1" || -z "$la" ]]; then
-    pg_su "ALTER SYSTEM SET listen_addresses = '*'" >/dev/null || die "cannot set listen_addresses - set  listen_addresses = '*'  in postgresql.conf and restart PostgreSQL"
-    restart=1
-  fi
-  if [[ $restart == 1 ]]; then
-    say "PostgreSQL restarts once to listen on the network (CMS/RPF reconnect by themselves; if not:  bash start.sh restart)"
-    { $PS systemctl restart postgresql || $PS service postgresql restart; } >/dev/null 2>&1 || warn "could not restart PostgreSQL - restart it yourself"
-    for _ in 1 2 3 4 5 6 7 8 9 10; do pg_isready -q -h localhost 2>/dev/null && break; sleep 1; done
-  elif [[ $changed == 1 ]]; then
-    pg_su "SELECT pg_reload_conf()" >/dev/null && say "PostgreSQL reloaded"
-  fi
-  local me src="$ip"; [[ "$ip" == */32 ]] && src="${ip%/*}"; me="$(my_ip)"
-  echo "  database access for $ip is set. Also make sure this PC's firewall lets that PC reach TCP 5432 and 7080, e.g. (ufw):"
-  echo "    sudo ufw allow from $src to any port 5432 proto tcp ; sudo ufw allow from $src to any port 7080 proto tcp"
-  echo "  then on the train PC:   bash start.sh --cms ${me:-<this-pc-ip>}"
-  return 0
+  allow_network "$ip"
+  echo "  allowed: $ip"
+  echo "  then on the train PC:   bash start.sh --cms $(my_ip)"
 }
 
 # trains that have registered at this CMS, and when each last reported (empty = no train has connected yet)
 do_trains() {
   local pw; pw="$(envget "$RPFD/.env" DB_PASSWORD)"
-  PGPASSWORD="$pw" psql -h localhost -U "$(envget "$RPFD/.env" DB_USER || echo cms)" -d "$(envget "$RPFD/.env" DB_NAME || echo cms)" -c \
+  PGPASSWORD="$pw" psql -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" -U "$(envget "$RPFD/.env" DB_USER || echo "$CFG_DB_USER")" -d "$(envget "$RPFD/.env" DB_NAME || echo "$CFG_DB_NAME")" -c \
     "select id, name, status, last_seen, now()-last_seen as ago from nvr_unit order by id" 2>&1 | head -n 20
 }
 
@@ -327,30 +386,30 @@ do_start() {
       tail -n 20 "$LOGS/cms-rpf-start.log" >&2; die "CMS/RPF did not start"
     fi
   fi
-  CMS_PORT="$(envget "$RPFD/.env" CMS_PORT)"; CMS_PORT="${CMS_PORT:-7080}"
-  wait_url "http://localhost:$CMS_PORT/health" 60 || die "CMS does not answer on :$CMS_PORT (see logs/cms-rpf-start.log)"
+  CMS_PORT="$CFG_CMS_PORT"
+  wait_url "http://$CFG_LOOPBACK_HOST:$CMS_PORT/health" 60 || die "CMS does not answer on :$CMS_PORT (see logs/cms-rpf-start.log)"
   verify_media
   do_check_footage quiet     # footage that sits in an older folder is moved into the shared one
   if [[ $DEMO == 1 ]]; then
     say "loading demo zones, posts and logins"
     local P; P="$(envget "$RPFD/.env" DB_PASSWORD)"
-    PGPASSWORD="$P" psql -h localhost -U "$(envget "$RPFD/.env" DB_USER || echo cms)" -d "$(envget "$RPFD/.env" DB_NAME || echo cms)" -q -f "$CMSD/sql/fixtures.sql" >/dev/null 2>&1 || warn "fixtures not applied (already loaded?)"
+    PGPASSWORD="$P" psql -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" -U "$(envget "$RPFD/.env" DB_USER || echo "$CFG_DB_USER")" -d "$(envget "$RPFD/.env" DB_NAME || echo "$CFG_DB_NAME")" -q -f "$CMSD/sql/fixtures.sql" >/dev/null 2>&1 || warn "fixtures not applied (already loaded?)"
     (cd "$RPFD" && set -a && . ./.env && set +a && node scripts/seed_demo.js >/dev/null 2>&1) || true
   fi
 
 
   [[ -f "$ROOT/data/.passwords-reset" ]] || do_reset_passwords   # once: every CMS / RPF account -> Admin@123
+  TRAIN_NETS=""; auto_allow_trains
 
   local me; me="$(my_ip)"; me="${me:-<this-pc-ip>}"
   cat <<MSG
 
   CMS + RPF are running.
     CMS     http://$me:$CMS_PORT/console/        (logins: Admin@123 after the first start)
-    RPF     http://$me:$(envget "$RPFD/.env" PORT || echo 7090)
+    RPF     http://$me:$CFG_RPF_PORT
   Footage folder (CMS + RPF share it): $MEDIA_DIR
-  The train PC (M-NVR + bridge) connects to this PC:
-    1) here, once per train PC:    bash start.sh allow-train <train-pc-ip>
-    2) on the train PC:            bash start.sh --cms $me
+  Trains allowed to connect: ${TRAIN_NETS:-none}   (ALLOW_TRAIN_NETWORKS in $CFG; one more PC: bash start.sh allow-train <ip>)
+  On each train PC:              bash start.sh --cms $me
   Stop: bash start.sh stop      Logs: bash start.sh logs [cms|rpf]
 MSG
   [[ $DEMO == 0 ]] && echo "  First time: open the RPF address and fill in the Thana / Post registration form (the CMS needs at least one zone: create it in the CMS console, or run: bash start.sh --demo-data)"

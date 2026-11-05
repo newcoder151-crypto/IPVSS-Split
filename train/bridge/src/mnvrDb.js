@@ -25,7 +25,7 @@ module.exports = {
   },
   async deviceInfo() {
     try {
-      const r = await q(`SELECT config_key, config_value FROM system_config WHERE config_key IN ('firmware_version','train_number','device_name')`);
+      const r = await q(`SELECT config_key, config_value FROM system_config WHERE config_key IN ('firmware_version','train_number','device_name','mnvr_number')`);
       return Object.fromEntries(r.map((x) => [x.config_key, x.config_value]));
     } catch (_) { return {}; }
   },

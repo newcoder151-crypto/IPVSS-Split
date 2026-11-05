@@ -7,12 +7,13 @@ function int(name, dflt) {
 }
 
 const config = {
-  port: int('PORT', 7090),
+  // Hosts, ports and database names are NOT defaulted here: config/control-room.conf is the one place, start.sh hands them over (see main() in server.js).
+  port: process.env.PORT ? Number(process.env.PORT) : undefined,
   db: {
-    host: process.env.DB_HOST || 'localhost',
-    port: int('DB_PORT', 5432),
-    database: process.env.DB_NAME || 'cms',
-    user: process.env.DB_USER || 'cms',
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT ? Number(process.env.DB_PORT) : undefined,
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
   },
   jwtSecret: process.env.JWT_SECRET || '',
@@ -35,7 +36,7 @@ const config = {
   // Local evidence store of this post/RPF server: copies the officer chose to keep locally.
   localEvidenceDir: path.resolve(process.env.LOCAL_EVIDENCE_DIR || path.join(__dirname, '..', 'local-evidence')),
   ffmpeg: process.env.FFMPEG_PATH || 'ffmpeg',
-  portAuto: process.env.PORT_AUTO ? process.env.PORT_AUTO === '1' : process.env.NODE_ENV !== 'production',
+  portAuto: process.env.PORT_AUTO === '1',   // off unless asked for: the port is fixed (config/control-room.conf), the server never wanders to port+1
 };
 
 module.exports = config;

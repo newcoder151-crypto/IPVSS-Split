@@ -196,7 +196,7 @@
   // =========================================================================================
   // Footage requests
   // =========================================================================================
-  const approve = (r) => actionBtn('Approve', async () => { await api(`/requests/${r.id}/approve`, { method: 'POST', body: {} }); toast(`Request #${r.id} approved`); C.refresh(); C.reloadDrawer(); }, 'primary sm');
+  const approve = (r) => actionBtn('Approve', async () => { await api(`/requests/${r.id}/approve`, { method: 'POST', body: {} }); toast(`Request #${r.id} approved - asking every M-NVR of train ${r.train_no}`); C.refresh(); C.reloadDrawer(); }, 'primary sm');
   function amendDialog(r) {
     C.formDialog({ title: `Amend request #${r.id}`, sub: 'Change the time window, then approve. The post sees both the original and the amended window.', submitLabel: 'Amend and approve',
       fields: [{ name: 'ws', label: 'From', type: 'datetime-local', value: C.toLocalInput(new Date(r.window_start)) }, { name: 'we', label: 'To', type: 'datetime-local', value: C.toLocalInput(new Date(r.window_end)) }, { name: 'note', label: 'Note', type: 'textarea' }],
@@ -206,51 +206,64 @@
     C.formDialog({ title: `Reject request #${r.id}`, sub: 'The post is told why.', submitLabel: 'Reject', danger: true, fields: [{ name: 'note', label: 'Reason (required)', type: 'textarea' }],
       submit: async (v) => { await api(`/requests/${r.id}/reject`, { method: 'POST', body: { note: v.note } }); toast('Request rejected'); C.refresh(); C.reloadDrawer(); } });
   }
+  // A request is always for a TRAIN NUMBER: approving it asks every M-NVR unit of that train for every camera.
+  const pad2 = (n) => String(n == null ? 0 : n).padStart(2, '0');
+  const CAMCLS = { approved: 'indigo', amended: 'indigo', awaiting_upload: 'teal', fulfilled: 'green', failed: 'red', expired: 'grey', cancelled: 'grey', rejected: 'red' };
   const STEPS = ['Sent', 'Approved', 'Fetching', 'Ready'];
   const stepper = (r) => {
-    const cur = { submitted: 1, approved: 2, amended: 2, awaiting_upload: 2, fulfilled: 4 }[r.status]; const bad = { rejected: 1, failed: 2, expired: 2, cancelled: 1 }[r.status];
+    const cur = { submitted: 1, approved: 2, awaiting_upload: 2, partial: 4, fulfilled: 4 }[r.status]; const bad = { rejected: 1, failed: 2, expired: 2, cancelled: 1 }[r.status];
     return h('div', { class: 'pipe' }, STEPS.map((text, i) => { const cls = bad !== undefined ? (i < bad ? 'done' : i === bad ? (r.status === 'cancelled' ? 'stop' : 'bad') : '') : (i < cur ? 'done' : i === cur ? 'now' : '');
       return h('div', { class: `pstep ${cls}` }, h('i', {}, cls === 'done' ? C.ic('check', 10) : cls === 'bad' || cls === 'stop' ? C.ic('x', 10) : ''), h('span', {}, text)); }));
   };
+  const trainCell = (r) => [`Train ${r.train_no}`, r.cameras_total ? h('div', { class: 'muted' }, `${r.cameras_fulfilled}/${r.cameras_total} cameras ready, ${r.units_total} M-NVR`) : null];
   V.requests = async () => {
     const tab = S.params.tab || 'decide'; const limit = 50; const off = Number(S.params.offset || 0);
     const P = S.params;
     const d = await api('/requests' + qs({ tab: tab === 'all' ? '' : tab, status: P.rstatus, when: P.when, q: P.q, sort: P.sort, limit, offset: off, zone_id: P.zone_id }));
     const rbar = C.filterBar([
-      { type: 'search', key: 'q', placeholder: 'Search reason, unit, train, post, officer, #...' },
-      { key: 'rstatus', label: 'Status', options: [['', 'Any'], ['submitted', 'Needs decision'], ['awaiting_upload', 'Waiting for train'], ['fulfilled', 'Delivered'], ['rejected', 'Rejected'], ['cancelled', 'Cancelled'], ['failed', 'Failed'], ['expired', 'Expired']] },
+      { type: 'search', key: 'q', placeholder: 'Search train number, reason, post, officer, #...' },
+      { key: 'rstatus', label: 'Status', options: [['', 'Any'], ['submitted', 'Needs decision'], ['awaiting_upload', 'Waiting for train'], ['fulfilled', 'Delivered'], ['partial', 'Partly delivered'], ['rejected', 'Rejected'], ['cancelled', 'Cancelled'], ['failed', 'Failed'], ['expired', 'Expired']] },
       { key: 'when', label: 'Requested', options: C.DATE_OPTS },
     ], [['attn', 'Needs attention first'], ['new', 'Newest first'], ['old', 'Oldest first'], ['win', 'Footage time (newest)']]);
     const cn = S.counts;
-    return h('div', {}, head('Footage requests', C.zoneSelect(), chips([['decide', 'Needs decision', cn.decide], ['waiting', 'Waiting for train', cn.waiting], ['done', 'Finished'], ['all', 'All']], tab, (v) => { S.params.tab = v; S.params.offset = 0; C.refresh(); }), h('span', { class: 'muted' }, `${d.total} found`)), rbar,
-      table(['#', 'Requested', 'Post', 'Camera / train', 'Window', 'Status', 'Actions'],
+    return h('div', {}, head('Footage requests (by train number)', C.zoneSelect(), chips([['decide', 'Needs decision', cn.decide], ['waiting', 'Waiting for train', cn.waiting], ['done', 'Finished'], ['all', 'All']], tab, (v) => { S.params.tab = v; S.params.offset = 0; C.refresh(); }), h('span', { class: 'muted' }, `${d.total} found`)), rbar,
+      table(['#', 'Requested', 'Post', 'Train', 'Window', 'Status', 'Actions'],
         d.rows.map((r) => h('tr', { class: 'click', onclick: (e) => { if (!e.target.closest('button')) openRequest(r.id); } }, h('td', {}, r.id, r.incident_id ? h('div', { class: 'muted' }, `inc #${r.incident_id}`) : null),
-          h('td', {}, fmtTime(r.created_at), h('div', { class: 'muted' }, r.requested_by_username)), h('td', {}, r.post_name), h('td', {}, nvrCell(r)),
+          h('td', {}, fmtTime(r.created_at), h('div', { class: 'muted' }, r.requested_by_username)), h('td', {}, r.post_name), h('td', {}, trainCell(r)),
           h('td', {}, fmtShort(r.window_start), h('div', { class: 'muted' }, `to ${fmtShort(r.window_end)} (${Math.round((new Date(r.window_end) - new Date(r.window_start)) / 60000)} min)`), r.reason ? h('div', { class: 'muted clip' }, r.reason) : null),
-          h('td', {}, stepper(r), stBadge('req', r.status), r.status === 'awaiting_upload' ? h('div', { class: 'muted' }, r.nvr_last_seen ? `NVR seen ${ago(r.nvr_last_seen)}` : 'NVR never seen') : null, r.failure_reason ? h('div', { class: 'muted' }, r.failure_reason) : null),
-          h('td', {}, r.status === 'submitted' ? h('div', { class: 'actions' }, approve(r), h('button', { class: 'btn sm', onclick: () => amendDialog(r) }, 'Amend'), h('button', { class: 'btn sm danger', onclick: () => rejectDialog(r) }, 'Reject')) : r.status === 'fulfilled' ? h('button', { class: 'btn sm', onclick: () => openRequest(r.id) }, 'Footage') : null))),
+          h('td', {}, stepper(r), stBadge('req', r.status), r.failure_reason ? h('div', { class: 'muted' }, r.failure_reason) : null),
+          h('td', {}, r.status === 'submitted' ? h('div', { class: 'actions' }, approve(r), h('button', { class: 'btn sm', onclick: () => amendDialog(r) }, 'Amend'), h('button', { class: 'btn sm danger', onclick: () => rejectDialog(r) }, 'Reject')) : ['approved', 'awaiting_upload'].includes(r.status) ? h('div', { class: 'actions' }, h('button', { class: 'btn sm danger', onclick: () => cancelDialog(r) }, 'Cancel')) : null))),
         tab === 'decide' ? 'No requests are waiting for a decision.' : 'No requests.'), pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); }));
   };
+  // Cancel a request after it was approved (also while submitted): the cameras not yet delivered and their upload commands are withdrawn.
+  // Footage already delivered stays; the post is told.
+  function cancelDialog(r) {
+    C.formDialog({ title: `Cancel request #${r.id} - train ${r.train_no}`, sub: 'Stops asking the train for the footage that has not arrived yet. Delivered files stay. The post is told.', submitLabel: 'Cancel request', danger: true,
+      fields: [{ name: 'note', label: 'Reason (optional)', type: 'textarea' }],
+      submit: async (v) => { await api(`/requests/${r.id}/cancel`, { method: 'POST', body: { note: v.note } }); toast(`Request #${r.id} cancelled`); C.refresh(); } });
+  }
   function openRequest(id) {
     C.openDrawer(`request-${id}`, async () => {
-      const d = await api(`/requests/${id}`); const r = d.request; const open = ['approved', 'amended', 'awaiting_upload'].includes(r.status);
-      const online = r.nvr_last_seen && Date.now() - new Date(r.nvr_last_seen).getTime() < 90000;
-      return C.drawerShell(`Request #${r.id}`,
-        section('Request', kv([['Status', stBadge('req', r.status)], ['Post', r.post_name], ['Requested', `${fmtTime(r.created_at)} by ${r.requested_by_username}`], ['Camera / train', nvrCell(r)],
+      const d = await api(`/requests/${id}`); const r = d.request; const open = ['approved', 'awaiting_upload'].includes(r.status);
+      const byUnit = new Map(); for (const c of d.cameras) { if (!byUnit.has(c.unit_no)) byUnit.set(c.unit_no, []); byUnit.get(c.unit_no).push(c); }
+      return C.drawerShell(`Request #${r.id} - train ${r.train_no}`,
+        section('Request', kv([['Status', stBadge('req', r.status)], ['Train', r.train_no], ['Post', r.post_name], ['Requested', `${fmtTime(r.created_at)} by ${r.requested_by_username}`],
           ['Window', `${fmtTime(r.window_start)} to ${fmtTime(r.window_end)}`], r.orig_window_start ? ['Original window', `${fmtTime(r.orig_window_start)} to ${fmtTime(r.orig_window_end)}`] : null, ['Reason', r.reason],
+          r.cameras_total ? ['Cameras', `${r.cameras_fulfilled} of ${r.cameras_total} delivered, ${r.cameras_open} still open, ${r.cameras_failed} failed/cancelled - ${r.units_total} M-NVR unit(s)`] : null,
           r.incident_id ? ['Incident', h('a', { href: '#', onclick: (e) => { e.preventDefault(); openIncident(r.incident_id); } }, `#${r.incident_id}`)] : null,
-          r.operator_username ? ['Decision', `${r.operator_username} at ${fmtTime(r.decided_at)}${r.decision_note ? ` - ${r.decision_note}` : ''}`] : null, r.failure_reason ? ['Failure', r.failure_reason] : null])),
-        r.status === 'submitted' ? section('Decide', h('div', { class: 'actions' }, approve(r), h('button', { class: 'btn', onclick: () => amendDialog(r) }, 'Amend window'), h('button', { class: 'btn danger', onclick: () => rejectDialog(r) }, 'Reject'))) : null,
-        ['submitted', 'approved', 'amended', 'awaiting_upload', 'failed'].includes(r.status) ? section('Footage on the CMS', kv([
-          ['Covered', d.coverage.covered ? badge('complete', 'green') : badge(d.coverage.segments ? 'partial' : 'not uploaded yet', 'amber')], ['Segments stored', `${d.coverage.segments} (${fmtDur(d.coverage.seconds_have)} of footage)`],
-          ['NVR', `${r.nvr_name} - ${online ? 'online' : `offline (last seen ${ago(r.nvr_last_seen)})`}`], d.coverage.gaps.length ? ['Missing', d.coverage.gaps.map((g) => h('div', {}, `${fmtShort(g.from)} to ${fmtShort(g.to)}`))] : null]),
-          h('div', { class: 'actions mt' }, open || r.status === 'failed' ? h('button', { class: 'btn sm', onclick: async () => { try { await api(`/requests/${id}/retry-upload`, { method: 'POST', body: {} }); toast('Upload command re-issued'); C.reloadDrawer(); } catch (e) { toast(e.message); } } }, 'Re-send upload command') : null,
-            (open || r.status === 'failed') && d.coverage.segments ? h('button', { class: 'btn sm', onclick: async () => { try { await api(`/requests/${id}/deliver-partial`, { method: 'POST', body: {} }); toast('Delivered what the CMS has'); C.refresh(); C.reloadDrawer(); } catch (e) { toast(e.message); } } }, 'Deliver what we have') : null,
-            ['submitted', ...['approved', 'amended', 'awaiting_upload']].includes(r.status) ? h('button', { class: 'btn sm danger', onclick: () => C.formDialog({ title: 'Cancel request', fields: [{ name: 'note', label: 'Reason (optional)', type: 'textarea' }], submitLabel: 'Cancel request', danger: true, submit: async (v) => { await api(`/requests/${id}/cancel`, { method: 'POST', body: { note: v.note } }); C.refresh(); C.reloadDrawer(); } }) }, 'Cancel request') : null)) : null,
-        d.footage.length ? section('Delivered footage', d.footage.map((f) => h('div', { class: 'item' }, `#${f.id} - ${f.format} - ${fmtSize(f.file_size_bytes)}${f.duration_s ? ` - ${fmtDur(f.duration_s)}` : ''}`, h('div', { class: 'muted' }, `${fmtTime(f.start_time)} to ${fmtTime(f.end_time)} - ${f.segment_count} segment(s)`, h('div', { class: 'mono' }, `sha256 ${f.sha256.slice(0, 20)}...`)),
-          h('div', { class: 'actions' }, h('button', { class: 'btn sm primary', onclick: () => playFootage(f.id) }, 'Play'), h('button', { class: 'btn sm', onclick: () => downloadFootage(f.id) }, 'Download'))))) : null,
-        d.commands.length ? section('Commands to the NVR', d.commands.map((c) => h('div', { class: 'item' }, `#${c.id} ${label(c.kind)} `, stBadge('cmd', c.status), h('div', { class: 'muted' }, `created ${fmtTime(c.created_at)}${c.completed_at ? `, finished ${fmtTime(c.completed_at)}` : ''}`)))) : null,
-        section('History', d.history.map((x) => h('div', { class: 'item' }, label(x.action.replace('request.', '')), h('div', { class: 'muted' }, `${fmtTime(x.occurred_at)} - ${x.actor || 'system'}`)))));
+          r.operator_username ? ['Decision', `${r.operator_username} at ${fmtTime(r.decided_at)}${r.decision_note ? ` - ${r.decision_note}` : ''}`] : null, r.failure_reason ? ['Failure', r.failure_reason] : null,])),
+        r.status === 'submitted' ? section('Decide', h('div', { class: 'actions' }, approve(r), h('button', { class: 'btn', onclick: () => amendDialog(r) }, 'Amend window'), h('button', { class: 'btn danger', onclick: () => rejectDialog(r) }, 'Reject')),
+          h('div', { class: 'muted mt' }, `Approving asks every M-NVR of train ${r.train_no} (${d.units.length} unit${d.units.length === 1 ? '' : 's'}, ${d.units.reduce((a, u) => a + u.cameras.filter((c) => c.active).length, 0)} active cameras) for its footage.`)) : null,
+        d.cameras.length ? section('Cameras of the train', [...byUnit.entries()].map(([unit, cams]) => h('div', { class: 'item' }, h('b', {}, `M-NVR ${pad2(unit)}`), ` ${cams[0].nvr_name} `, cams[0].unit_online ? badge('connected', 'green') : badge('not connected', 'grey'),
+          cams.map((c) => h('div', { class: 'muted' }, `C${pad2(c.camera_no)} ${c.camera_name} `, badge(c.status.replace('_', ' '), CAMCLS[c.status] || 'grey'), c.command_status ? ` command ${c.command_status}` : '',
+            c.file_name ? h('div', { class: 'mono' }, c.file_name, ' ', h('button', { class: 'btn sm primary', onclick: () => playFootage(c.footage_id) }, 'Play'), ' ', h('button', { class: 'btn sm', onclick: () => downloadFootage(c.footage_id) }, 'Download')) : null,
+            c.failure_reason ? h('div', {}, c.failure_reason) : null))))) : null,
+        ['approved', 'awaiting_upload', 'partial', 'failed'].includes(r.status) || r.status === 'submitted' ? section('Actions', h('div', { class: 'actions' },
+          ['approved', 'awaiting_upload', 'partial', 'failed'].includes(r.status) ? h('button', { class: 'btn sm', onclick: async () => { try { await api(`/requests/${id}/retry-upload`, { method: 'POST', body: {} }); toast('Upload commands re-issued'); C.reloadDrawer(); } catch (e) { toast(e.message); } } }, 'Re-send upload commands') : null,
+          open || r.status === 'failed' ? h('button', { class: 'btn sm', onclick: async () => { try { await api(`/requests/${id}/deliver-partial`, { method: 'POST', body: {} }); toast('Delivered what the CMS has'); C.refresh(); C.reloadDrawer(); } catch (e) { toast(e.message); } } }, 'Deliver what we have') : null,
+          ['submitted', 'approved', 'awaiting_upload'].includes(r.status) ? h('button', { class: 'btn sm danger', onclick: () => C.formDialog({ title: 'Cancel request', fields: [{ name: 'note', label: 'Reason (optional)', type: 'textarea' }], submitLabel: 'Cancel request', danger: true, submit: async (v) => { await api(`/requests/${id}/cancel`, { method: 'POST', body: { note: v.note } }); C.refresh(); C.reloadDrawer(); } }) }, 'Cancel request') : null)) : null,
+        d.commands.length ? section('Commands to the M-NVR units', d.commands.map((c) => h('div', { class: 'item' }, `#${c.id} ${label(c.kind)} `, stBadge('cmd', c.status), h('div', { class: 'muted' }, `created ${fmtTime(c.created_at)}${c.completed_at ? `, finished ${fmtTime(c.completed_at)}` : ''}`)))) : null,
+        section('History', d.history.map((x) => h('div', { class: 'item' }, label(x.action.replace('train_request.', '')), h('div', { class: 'muted' }, `${fmtTime(x.occurred_at)} - ${x.actor || 'system'}`)))));
     });
   }
   C.openRequest = openRequest; C.openIncident = openIncident; C.openAlert = openAlert;
@@ -271,21 +284,31 @@
     try { link = await api(`/footage/${f.id}/link`, { method: 'POST', body: { purpose: 'view' } }); } catch (e) { st.pane.replaceChildren(h('div', { class: 'note' }, e.message)); return; }
     if (st.current !== f.id) return;
     st.pane.replaceChildren(h('div', { class: 'pad' }, h('h3', {}, `Footage #${f.id} - ${f.camera_name} / ${f.nvr_name}`),
-      kv([['Post', f.post_name], ['Recorded', `${fmtTime(f.start_time)} to ${fmtTime(f.end_time)} (${f.duration_s ? fmtDur(f.duration_s) : '?'})`], ['Request', h('a', { href: '#', onclick: (e) => { e.preventDefault(); openRequest(f.request_id); } }, `#${f.request_id}`)],
+      kv([['Post', f.post_name], ['Recorded', `${fmtTime(f.start_time)} to ${fmtTime(f.end_time)} (${f.duration_s ? fmtDur(f.duration_s) : '?'})`], ['Request', f.train_request_id ? h('a', { href: '#', onclick: (e) => { e.preventDefault(); openRequest(f.train_request_id); } }, `#${f.train_request_id}`) : `#${f.request_id}`], f.file_name ? ['File', h('span', { class: 'mono' }, f.file_name)] : null,
         ['File', `${f.format} ${fmtSize(f.file_size_bytes)} - ${f.segment_count} segment(s)`], ['SHA-256', h('span', { class: 'mono' }, f.sha256)], ['Flags', +f.active_flags ? badge(`${f.active_flags} flagged`, 'amber') : 'none (normal 30-day policy)']]),
       h('div', { class: 'player' }, C.videoEl(link, 'Viewing is logged in the audit trail.')),
       h('div', { class: 'actions mt' }, h('button', { class: 'btn', onclick: () => downloadFootage(f.id) }, 'Download original'))));
   }
+  // ---- grouping of the footage and evidence lists: by day, then by train / M-NVR / camera / post / request / incident ----
+  const trainOf = (f) => (f.train_no ? `Train ${f.train_no}` : 'No train number');
+  const unitOf = (f) => `${trainOf(f)} - M-NVR ${pad2(f.unit_no)}`;
+  const camOf = (f) => `${unitOf(f)} - C${pad2(f.camera_no)} ${f.camera_name || ''}`.trim();
+  const SUBS = [['train', 'Train', trainOf], ['unit', 'Train, then M-NVR', unitOf], ['cam', 'Camera', camOf], ['post', 'Post', (f) => f.post_name || 'No post'],
+    ['inc', 'Incident', (f) => (f.incident_id ? `Incident #${f.incident_id}` : 'No incident')]];
+  const FOOT_GROUP = { noun: 'recording', defaultSub: 'train', dates: [['rec', 'Date recorded', (f) => f.start_time || f.window_start], ['del', 'Date delivered', (f) => f.delivered_at]],
+    subs: [...SUBS, ['req', 'Request', (f) => (f.train_request_id ? `Request #${f.train_request_id} - ${trainOf(f)}` : `Request #${f.request_id}`)]] };
+  const EVID_GROUP = { noun: 'flag', defaultSub: 'train', dates: [['flag', 'Date flagged', (f) => f.flagged_at], ['rec', 'Date of the footage', (f) => f.footage_start || f.window_start]],
+    subs: [...SUBS, ['kept', 'How long it is kept', (f) => (f.retention === 'permanent' ? 'Kept for life' : 'Kept until a date')], ['who', 'Flagged by', (f) => f.flagged_by_username || f.flagged || '-']] };
   V.footage = async () => {
-    const limit = 50; const off = Number(S.params.offset || 0);
+    const limit = 200; const off = Number(S.params.offset || 0);
     const d = await api('/footage' + qs({ limit, offset: off, zone_id: S.params.zone_id }));
     return C.splitView('footage', {
       head: head('Delivered footage', C.zoneSelect()),
       emptyPane: 'Select a recording to watch it here.',
-      list: (st) => h('div', {}, table(['#', 'Post', 'Camera / train', 'Recorded', 'Flags', ''],
-        d.rows.map((f) => h('tr', { class: `click ${st.current === f.id ? 'sel' : ''}`, 'data-id': f.id, onclick: () => showFootage(st, f) }, h('td', {}, f.id, h('div', { class: 'muted' }, `req #${f.request_id}`)), h('td', {}, f.post_name), h('td', {}, nvrCell(f)),
+      list: (st) => h('div', {}, C.groupedList('footage', d.rows, FOOT_GROUP, (rs) => table(['#', 'Post', 'Camera / train', 'Recorded', 'Flags', ''],
+        rs.map((f) => h('tr', { class: `click ${st.current === f.id ? 'sel' : ''}`, 'data-id': f.id, onclick: () => showFootage(st, f) }, h('td', {}, f.id, h('div', { class: 'muted' }, `req #${f.request_id}`)), h('td', {}, f.post_name), h('td', {}, nvrCell(f)),
           h('td', {}, fmtShort(f.start_time), h('div', { class: 'muted' }, `${f.duration_s ? fmtDur(f.duration_s) : ''} - ${fmtSize(f.file_size_bytes)}`)), h('td', {}, +f.active_flags ? badge(`${f.active_flags} flagged`, 'amber') : h('span', { class: 'muted' }, '30-day')),
-          h('td', {}, h('button', { class: 'btn sm primary' }, 'Play')))), 'No footage has been delivered yet.'), pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); })),
+          h('td', {}, h('button', { class: 'btn sm primary' }, 'Play')))), 'No footage has been delivered yet.')), pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); })),
     });
   };
 
@@ -299,7 +322,7 @@
   const STORAGE_TEXT = { cms: 'On CMS (kept beyond 30 days)', local: 'Locally at the post only - CMS keeps no copy', both: 'On CMS and a local copy at the post' };
   const storageBadges = (f) => [f.storage !== 'local' ? h('div', {}, f.archive_status === 'archived' ? badge('on CMS', 'green') : stBadge('arch', f.archive_status)) : h('div', {}, badge('not on CMS', 'grey')), f.storage !== 'cms' ? h('div', {}, f.has_local ? badge('local at post', 'teal') : badge('local copy failed', 'red')) : null];
   const flagFacts = (f) => kv([['Kept', STORAGE_TEXT[f.storage] || f.storage], ['Retention', f.retention === 'permanent' ? badge('for life', 'indigo') : `until ${fmtTime(f.retain_to)}`], ['Status', badge(f.status, f.status === 'active' ? 'green' : 'grey')], ['Post', f.post_name],
-    ['Footage', `#${f.footage_id} - ${f.camera_name} / ${f.nvr_name}`], ['Section', [sectionText(f), f.section_from ? h('div', { class: 'muted' }, `${fmtTime(f.section_from)} to ${fmtTime(f.section_to)}`) : null]],
+    ['Footage', `#${f.footage_id} - ${f.camera_name} / ${f.nvr_name}`], ['Train', camOf(f)], ['Section', [sectionText(f), f.section_from ? h('div', { class: 'muted' }, `${fmtTime(f.section_from)} to ${fmtTime(f.section_to)}`) : null]],
     ['Entered at the RPF', `${fmtTime(f.flagged_at)} by ${f.flagged_by_username}`], ['Justification', f.justification],
     f.storage !== 'local' ? ['CMS copy', [stBadge('arch', f.archive_status), f.archive_size_bytes ? ` ${fmtSize(f.archive_size_bytes)}` : '', f.archive_error ? h('div', { class: 'muted' }, f.archive_error) : null]] : null,
     f.storage !== 'cms' ? ['Local copy at the post', f.has_local ? `saved ${fmtTime(f.local_saved_at)} - ${fmtSize(f.local_size_bytes)} (the file is on the post's own server)` : badge(f.local_error || 'not saved', 'red')] : null,
@@ -319,15 +342,15 @@
         h('button', { class: 'btn', onclick: () => openFlag(f.id) }, 'Chain of custody...'))));
   }
   V.evidence = async () => {
-    const limit = 50; const off = Number(S.params.offset || 0);
+    const limit = 200; const off = Number(S.params.offset || 0);
     const d = await api('/evidence' + qs({ status: S.params.estatus === undefined ? 'active' : S.params.estatus, limit, offset: off, zone_id: S.params.zone_id }));
     return C.splitView('evidence', {
       head: head('Evidence - flagged recordings', C.zoneSelect(), chips([['active', 'Held'], ['released', 'Released'], ['', 'All']], S.params.estatus === undefined ? 'active' : S.params.estatus, (v) => { S.params.estatus = v; S.params.offset = 0; C.refresh(); }), h('span', { class: 'muted' }, `${fmtSize(d.archive_bytes)} archived on CMS`)),
       emptyPane: 'Select a flagged recording to play it and see what the officer entered.',
-      list: (st) => h('div', {}, table(['#', 'Flagged', 'Section', 'Kept', 'Copies'],
-        d.rows.map((f) => h('tr', { class: `click ${st.current === f.id ? 'sel' : ''}`, 'data-id': f.id, onclick: () => showFlag(st, f) }, h('td', {}, f.id, f.incident_id ? h('div', { class: 'muted' }, `inc #${f.incident_id}`) : null), h('td', {}, fmtShort(f.flagged_at), h('div', { class: 'muted' }, `${f.flagged_by_username} - ${f.post_name}`)),
-          h('td', {}, sectionText(f), h('div', { class: 'muted' }, `${f.camera_name} / ${f.nvr_name}`)), h('td', {}, f.retention === 'permanent' ? badge('for life', 'indigo') : [badge('timed', 'blue'), h('div', { class: 'muted' }, `until ${C.fmtDate(f.retain_to)}`)], f.status !== 'active' ? h('div', {}, badge(f.status, 'grey')) : null), h('td', {}, storageBadges(f)))),
-        'Nothing has been flagged.'), pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); })),
+      list: (st) => h('div', {}, C.groupedList('evidence', d.rows, EVID_GROUP, (rs) => table(['#', 'Flagged', 'Section', 'Kept', 'Copies'],
+        rs.map((f) => h('tr', { class: `click ${st.current === f.id ? 'sel' : ''}`, 'data-id': f.id, onclick: () => showFlag(st, f) }, h('td', {}, f.id, f.incident_id ? h('div', { class: 'muted' }, `inc #${f.incident_id}`) : null), h('td', {}, fmtShort(f.flagged_at), h('div', { class: 'muted' }, `${f.flagged_by_username} - ${f.post_name}`)),
+          h('td', {}, sectionText(f), h('div', { class: 'muted' }, `${f.camera_name} / ${f.nvr_name}`), h('div', { class: 'muted' }, camOf(f))), h('td', {}, f.retention === 'permanent' ? badge('for life', 'indigo') : [badge('timed', 'blue'), h('div', { class: 'muted' }, `until ${C.fmtDate(f.retain_to)}`)], f.status !== 'active' ? h('div', {}, badge(f.status, 'grey')) : null), h('td', {}, storageBadges(f)))),
+        'Nothing has been flagged.')), pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); })),
     });
   };
   function openFlag(id) {

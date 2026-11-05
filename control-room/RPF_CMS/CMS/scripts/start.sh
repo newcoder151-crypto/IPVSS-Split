@@ -34,6 +34,13 @@ mkdir -p "$RUN_DIR" "$LOG_DIR"
 log()  { echo "[start.sh] $*"; }
 fail() { echo "[start.sh] ERROR: $*" >&2; exit 1; }
 
+# ---- settings: hosts, ports, database names live in control-room/config/control-room.conf (nothing is hard-coded here) ---------
+CFG="${IPVSS_CONFIG:-$PROJECT_ROOT/../../config/control-room.conf}"
+[[ -r "$CFG" ]] || fail "config file not found: $CFG  (restore control-room/config/control-room.conf, or point IPVSS_CONFIG at yours)"
+cfg() { grep -E "^$1=" "$CFG" | tail -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//'; }
+cfg_need() { local v="${!1:-}"; [[ -n "$v" ]] || v="$(cfg "$1")"; [[ -n "$v" ]] || fail "$1 is not set in $CFG"; printf '%s' "$v"; }
+CFG_DB_HOST="$(cfg_need DB_HOST)"; CFG_DB_PORT="$(cfg_need DB_PORT)"; CFG_DB_NAME="$(cfg_need DB_NAME)"; CFG_DB_ADMIN_USER="$(cfg_need DB_ADMIN_USER)"
+
 require_env() {
   [[ -f "$ENV_FILE" ]] || fail ".env not found at $ENV_FILE. Copy .env.example and edit it first."
 }
@@ -41,11 +48,11 @@ require_env() {
 db_env() {
   # shellcheck disable=SC1090
   set -a; source "$ENV_FILE"; set +a
-  DB_NAME="${DB_NAME:-cms}"
+  DB_NAME="${DB_NAME:-$CFG_DB_NAME}"
   DB_USER="${DB_USER:-cms_app}"
-  DB_HOST="${DB_HOST:-localhost}"
-  DB_PORT="${DB_PORT:-5432}"
-  PG_SUPERUSER="${PG_SUPERUSER:-postgres}"
+  DB_HOST="${DB_HOST:-$CFG_DB_HOST}"
+  DB_PORT="${DB_PORT:-$CFG_DB_PORT}"
+  PG_SUPERUSER="${PG_SUPERUSER:-$CFG_DB_ADMIN_USER}"
 }
 
 check_postgres_running() {

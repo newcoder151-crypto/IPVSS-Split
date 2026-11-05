@@ -60,7 +60,7 @@ function buildApp() {
   api.use('/', require('./routes/meta'));
   api.use('/alerts', require('./routes/alerts'));
   api.use('/incidents', require('./routes/incidents'));
-  api.use('/requests', require('./routes/requests'));
+  api.use('/train-requests', require('./routes/trainRequests'));
   api.use('/footage', require('./routes/footage'));
   api.use('/flags', require('./routes/flags'));
   api.use('/notifications', require('./routes/notifications'));
@@ -102,6 +102,11 @@ function listen(app) {
 }
 
 async function main() {
+  const unset = ['PORT', 'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER'].filter((k) => !process.env[k]);
+  if (unset.length) {
+    console.error(`${unset.join(', ')} not set. Hosts, ports and database names are kept in config/control-room.conf; start the service with  bash start.sh  (it passes them on), or set them in the environment.`);
+    process.exit(1);
+  }
   if (!config.jwtSecret || config.jwtSecret.length < 32) {
     console.error('JWT_SECRET is missing or shorter than 32 characters. Set it in .env (see .env.example).');
     process.exit(1);
@@ -116,7 +121,7 @@ async function main() {
     console.warn('Warning: database role lacks privileges RPF needs:\n  - ' + lacking.join('\n  - '));
   }
   const { server, port } = await listen(buildApp());
-  console.log(`RPF dashboard listening on port ${port}  (http://localhost:${port})`);
+  console.log(`RPF dashboard listening on port ${port}`);
   const live = require('./services/live');
   live.start();
   process.on('SIGTERM', () => { live.stop(); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });

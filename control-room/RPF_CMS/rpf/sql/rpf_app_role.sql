@@ -35,13 +35,14 @@ GRANT SELECT ON
     zone, rpf_post, users, nvr_unit, camera,
     alert, alert_delivery, alert_history, incident,
     video_request, video_access_grant, delivered_footage, evidence_flag,
-    audit_log, notification
+    audit_log, notification,
+    train_request
 TO rpf_app;
 
 -- Create
 GRANT INSERT ON
     rpf_post, users,                       -- first-run registration of this dashboard's post and its officer login
-    incident, alert_history, video_request,
+    incident, alert_history, train_request,
     video_access_grant, evidence_flag, audit_log
 TO rpf_app;
 
@@ -51,11 +52,12 @@ GRANT UPDATE (ack_at, ack_by)   ON alert_delivery TO rpf_app;  -- acknowledgemen
 GRANT UPDATE (status, closed_at, closed_by, closing_note, updated_at) ON incident TO rpf_app;  -- open -> under_review -> closed
 GRANT UPDATE (local_path, local_sha256, local_size_bytes, local_saved_at, local_error) ON evidence_flag TO rpf_app;  -- RPF records its own local copy
 GRANT UPDATE (read_at, read_by) ON notification TO rpf_app;  -- officer marks notices read
-GRANT UPDATE (status)           ON video_request  TO rpf_app;  -- officer cancels a request
+GRANT UPDATE (status)           ON video_request  TO rpf_app;  -- officer cancels a request (the per-camera requests CMS made for a train)
+GRANT UPDATE (status, updated_at, cameras_open) ON train_request TO rpf_app;  -- officer cancels a request for a whole train
 GRANT UPDATE (password_hash, status) ON users TO rpf_app;  -- officer changes own password / forgot-password / team reset and enable-disable
 
 -- Ids for the inserts above
 GRANT USAGE ON SEQUENCE
-    rpf_post_id_seq, users_id_seq, incident_id_seq, alert_history_id_seq, video_request_id_seq,
+    rpf_post_id_seq, users_id_seq, incident_id_seq, alert_history_id_seq, train_request_id_seq,
     video_access_grant_id_seq, evidence_flag_id_seq, audit_log_id_seq
 TO rpf_app;

@@ -38,6 +38,16 @@ set -euo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 cd "$ROOT"
+
+# ---- settings: hosts, ports, database names live in control-room/config/control-room.conf (nothing is hard-coded here) ---------
+CFG="${IPVSS_CONFIG:-$ROOT/../../config/control-room.conf}"
+[[ -r "$CFG" ]] || { echo "error: config file not found: $CFG  (restore control-room/config/control-room.conf, or point IPVSS_CONFIG at yours)" >&2; exit 1; }
+cfg(){ grep -E "^$1=" "$CFG" | tail -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//'; }
+cfg_need(){ local v="${!1:-}"; [[ -n "$v" ]] || v="$(cfg "$1")"; [[ -n "$v" ]] || { echo "error: $1 is not set in $CFG" >&2; exit 1; }; printf '%s' "$v"; }
+CFG_LOOPBACK_HOST="$(cfg_need LOOPBACK_HOST)"; CFG_DB_HOST="$(cfg_need DB_HOST)"; CFG_DB_PORT="$(cfg_need DB_PORT)"
+CFG_DB_NAME="$(cfg_need DB_NAME)"; CFG_DB_USER="$(cfg_need DB_USER)"; CFG_DB_ADMIN_USER="$(cfg_need DB_ADMIN_USER)"
+CFG_CMS_PORT="$(cfg_need CMS_PORT)"; CFG_RPF_PORT="$(cfg_need RPF_PORT)"; CFG_SIM_UNITS="$(cfg_need SIM_UNITS)"
+CFG_LOCAL_HOSTS="$(cfg_need LOCAL_HOST_NAMES)"; CFG_RESERVED_PORTS="$(cfg_need RESERVED_PORTS)"
 RUN="$ROOT/run"; LOGS="$ROOT/logs"
 mkdir -p "$RUN" "$LOGS"
 
@@ -91,13 +101,13 @@ ensure_env_file() {
     [[ -f .env.example ]] || die ".env.example is missing"
     step "First run: creating .env with generated secrets"
     cp .env.example .env
-    set_env DB_HOST     "${DB_HOST:-localhost}"
-    set_env DB_PORT     "${DB_PORT:-5432}"
-    set_env DB_NAME     "${DB_NAME:-cms}"
-    set_env DB_USER     "${DB_USER:-cms}"
+    set_env DB_HOST     "${DB_HOST:-$CFG_DB_HOST}"
+    set_env DB_PORT     "${DB_PORT:-$CFG_DB_PORT}"
+    set_env DB_NAME     "${DB_NAME:-$CFG_DB_NAME}"
+    set_env DB_USER     "${DB_USER:-$CFG_DB_USER}"
     set_env DB_PASSWORD "${DB_PASSWORD:-$(rand_hex 16)}"
-    set_env PORT        "${PORT:-7090}"
-    set_env CMS_PORT    "${CMS_PORT:-7080}"
+    set_env PORT        "${PORT:-$CFG_RPF_PORT}"
+    set_env CMS_PORT    "${CMS_PORT:-$CFG_CMS_PORT}"
     set_env JWT_SECRET  "$(rand_hex 48)"
     set_env CMS_JWT_SECRET "$(rand_hex 48)"
     chmod 600 .env
@@ -118,12 +128,14 @@ ensure_env_file() {
 # ---------- settings -----------------------------------------------------------
 load_settings() {
   ensure_env_file
-  DB_HOST="${DB_HOST:-localhost}"; DB_PORT="${DB_PORT:-5432}"; DB_NAME="${DB_NAME:-cms}"; DB_USER="${DB_USER:-cms}"
+  DB_HOST="${DB_HOST:-$CFG_DB_HOST}"; DB_PORT="${DB_PORT:-$CFG_DB_PORT}"; DB_NAME="${DB_NAME:-$CFG_DB_NAME}"; DB_USER="${DB_USER:-$CFG_DB_USER}"
   MEDIA_DIR="$(cd "$ROOT" && mkdir -p "${MEDIA_ROOT:-./media}" && cd "${MEDIA_ROOT:-./media}" && pwd)"   # one footage store for CMS and RPF
-  RPF_PORT="${PORT:-7090}"
-  CMS_PORT="${CMS_PORT:-7080}"
+  # The ports are FIXED: CMS_PORT and RPF_PORT in config/control-room.conf. A port remembered in .env (or a PORT in the shell) is not used;
+  # .env is rewritten from the config so everything that reads it sees the same values.
+  RPF_PORT="$CFG_RPF_PORT"; CMS_PORT="$CFG_CMS_PORT"
+  set_env PORT "$RPF_PORT"; set_env CMS_PORT "$CMS_PORT"
   CMS_DIR="${CMS_DIR:-$ROOT/../CMS}"
-  PG_SUPERUSER="${PG_SUPERUSER:-postgres}"
+  PG_SUPERUSER="${PG_SUPERUSER:-$CFG_DB_ADMIN_USER}"
   PRIORITY_THRESHOLD="${PRIORITY_THRESHOLD:-7}"
   RPF_LEAST_PRIVILEGE="${RPF_LEAST_PRIVILEGE:-0}"
   ENSURE_PARTITIONS="${ENSURE_PARTITIONS:-1}"
@@ -135,7 +147,7 @@ load_settings() {
   fi
 }
 
-is_local_db() { [[ "$DB_HOST" == localhost || "$DB_HOST" == 127.0.0.1 || "$DB_HOST" == ::1 ]]; }
+is_local_db() { local h; for h in $CFG_LOCAL_HOSTS; do [[ "$DB_HOST" == "$h" ]] && return 0; done; return 1; }
 
 preflight() {
   local missing=()
@@ -286,7 +298,7 @@ SQL
 # ---------- process management ---------------------------------------------------
 pidfile() { echo "$RUN/$1.pid"; }
 running() { local f; f="$(pidfile "$1")"; [[ -f "$f" ]] && kill -0 "$(cat "$f")" 2>/dev/null; }
-port_busy() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+port_busy() { (exec 3<>"/dev/tcp/$CFG_LOOPBACK_HOST/$1") 2>/dev/null; }
 
 spawn() { # spawn NAME WORKDIR -- [VAR=val ...] COMMAND [ARGS...]   (detached, logs to logs/NAME.log)
   local name="$1" dir="$2"; shift 3
@@ -326,7 +338,7 @@ start_cms() {
     PORT="$CMS_PORT" PORT_AUTO=0 PRIORITY_THRESHOLD="$PRIORITY_THRESHOLD" CMS_JWT_SECRET="$CMS_JWT_SECRET" MEDIA_ROOT="$MEDIA_DIR" \
     LEGACY_API="${LEGACY_API:-$([[ "$DEMO" == 1 ]] && echo 1 || echo 0)}" \
     AUTO_APPROVE_REQUESTS="${AUTO_APPROVE_REQUESTS:-0}" node src/server.js
-  wait_http cms "http://127.0.0.1:$CMS_PORT/health" || return 1
+  wait_http cms "http://$CFG_LOOPBACK_HOST:$CMS_PORT/health" || return 1
 }
 
 start_rpf() {
@@ -337,15 +349,15 @@ start_rpf() {
   step "Starting RPF (API + dashboard) on :$RPF_PORT  [database role: $user]"
   spawn rpf "$ROOT" -- \
     DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" DB_NAME="$DB_NAME" DB_USER="$user" DB_PASSWORD="$pass" \
-    PORT="$RPF_PORT" PORT_AUTO=0 MEDIA_ROOT="$MEDIA_DIR" node src/server.js
-  wait_http rpf "http://127.0.0.1:$RPF_PORT/health" || return 1
+    PORT="$RPF_PORT" PORT_AUTO=0 CMS_HOST="$CFG_LOOPBACK_HOST" CMS_PORT="$CMS_PORT" MEDIA_ROOT="$MEDIA_DIR" node src/server.js
+  wait_http rpf "http://$CFG_LOOPBACK_HOST:$RPF_PORT/health" || return 1
 }
 
 start_sim() {
   if running sim; then say "    M-NVR simulator already running"; return 0; fi
   command -v ffmpeg >/dev/null 2>&1 || warn "ffmpeg not found: the simulated trains cannot produce footage (install ffmpeg)"
   step "Starting the M-NVR simulator (3 trains: heartbeat, GPS, alerts, footage upload on command)"
-  spawn sim "$CMS_DIR" -- CMS_URL="http://127.0.0.1:$CMS_PORT" CODEC="${SIM_CODEC:-h264}" node scripts/mnvr_sim.js run --units 1,2,3 --alerts "${SIM_ALERT_EVERY:-90}"
+  spawn sim "$CMS_DIR" -- CMS_URL="http://$CFG_LOOPBACK_HOST:$CMS_PORT" CODEC="${SIM_CODEC:-h264}" node scripts/mnvr_sim.js run --units "$CFG_SIM_UNITS" --alerts "${SIM_ALERT_EVERY:-90}"
   sleep 1; running sim || { warn "simulator exited; see $LOGS/sim.log"; return 1; }
 }
 
@@ -360,7 +372,7 @@ demo_alerts() {
     '"alert_type":"panic_button","priority":8,"lat":26.2,"lon":81.5' \
     '"alert_type":"tamper","priority":7,"lat":26.0,"lon":80.1' \
     '"alert_type":"loitering","priority":3,"lat":26.0,"lon":80.1'; do
-    curl -fsS -m 10 -X POST "http://127.0.0.1:$CMS_PORT/api/alerts" -H 'Content-Type: application/json' \
+    curl -fsS -m 10 -X POST "http://$CFG_LOOPBACK_HOST:$CMS_PORT/api/alerts" -H 'Content-Type: application/json' \
       -d "{\"nvr_id\":$nvr,$body}" >/dev/null && say "    raised: ${body%%,*}" || warn "could not raise alert: $body"
   done
 }
@@ -421,8 +433,8 @@ show_status() {
   if running supervisor; then printf '%-12s %s pid %s (restarts crashed services)\n' "Supervisor" "${C_GRN}running${C_OFF}" "$(cat "$(pidfile supervisor)")"
   else printf '%-12s %s\n' "Supervisor" "${C_DIM}not running${C_OFF} (services run detached; 'run' adds auto-restart)"; fi
   for n in cms rpf sim; do
-    case "$n" in cms) label="CMS backend"; url="http://127.0.0.1:$CMS_PORT/health" ;;
-                 rpf) label="RPF + UI";    url="http://127.0.0.1:$RPF_PORT/health" ;;
+    case "$n" in cms) label="CMS backend"; url="http://$CFG_LOOPBACK_HOST:$CMS_PORT/health" ;;
+                 rpf) label="RPF + UI";    url="http://$CFG_LOOPBACK_HOST:$RPF_PORT/health" ;;
                  sim) label="M-NVR simulator"; url="" ;; esac
     if running "$n"; then printf '%-12s %s pid %s' "$label" "${C_GRN}running${C_OFF}" "$(cat "$(pidfile "$n")")"; [[ -n "$url" ]] && printf ' - %s' "$(health "$url")"; printf '\n'
     else printf '%-12s %s\n' "$label" "${C_DIM}stopped${C_OFF}"; fi
@@ -434,34 +446,47 @@ ensure_rpf_deps() {
   [[ -d "$ROOT/node_modules/pg" ]] || { step "Installing RPF dependencies"; (cd "$ROOT" && npm install --omit=dev --no-audit --no-fund --silent); }
 }
 
-find_free_port() { # find_free_port START [AVOID]  -> first free port at or after START (and not AVOID)
-  local p="$1" avoid="${2:-}" i
-  for i in $(seq 0 60); do
-    if [[ "$p" != "$avoid" ]] && ! port_busy "$p"; then echo "$p"; return 0; fi
-    p=$((p + 1))
-  done
-  return 1
+# The ports are never changed automatically ("the next free one" made CMS/RPF wander from port to port).
+#  * a leftover copy of THIS project holding the port (an old CMS/RPF that was not stopped) is stopped, then the port is used;
+#  * a service of ours that is running but not on its configured port is restarted;
+#  * any other program on the port: nothing starts, and the message names it.
+port_holders() { # pids LISTENing on TCP port $1: ss, lsof and /proc together (any one of them may be missing or lack permission)
+  local port="$1" hex inode pid
+  {
+    command -v ss >/dev/null 2>&1 && ss -ltnpH "sport = :$port" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2
+    command -v lsof >/dev/null 2>&1 && lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null
+    hex="$(printf '%04X' "$port")"
+    for inode in $(awk -v h=":$hex" '$4 == "0A" && substr($2, length($2) - 4) == h { print $10 }' /proc/net/tcp /proc/net/tcp6 2>/dev/null); do
+      for pid in /proc/[0-9]*; do ls -l "$pid/fd" 2>/dev/null | grep -q "socket:\[$inode\]" && echo "${pid#/proc/}"; done
+    done
+  } | sort -u
 }
-
-# Ports adapt instead of failing:
-#  * an untouched OLD default (8090 / 8080 - the M-NVR's ports) moves to the new default (7090 / 7080);
-#  * a port that belongs to some other program is replaced by the next free one and remembered in .env.
-# A service of ours that is already running keeps its port.
+holder_text() { local pid out=""; for pid in $(port_holders "$1"); do out="$out pid $pid ($(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-100));"; done; echo "${out:- a process that could not be identified}"; }
+ours() { # is process $1 part of this project?
+  local pid="$1" cwd cmd root cms; root="$(cd "$ROOT" && pwd)"; cms="$(cd "$CMS_DIR" 2>/dev/null && pwd)"
+  cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null)"; cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+  [[ -n "$cwd$cmd" ]] || return 1
+  [[ "$cwd" == "$root"* || "$cmd" == *"$root"* || ( -n "$cms" && ( "$cwd" == "$cms"* || "$cmd" == *"$cms"* ) ) ]]
+}
+claim_port() { # claim_port PORT NAME CONFIG_KEY
+  local port="$1" name="$2" key="$3" pid i
+  if running "$4"; then
+    port_busy "$port" && return 0
+    warn "$name is running but not on its configured port $port - restarting it"; stop_one "$4"
+  fi
+  port_busy "$port" || return 0
+  for pid in $(port_holders "$port"); do
+    if ours "$pid"; then warn "port $port is held by an old copy of this project (pid $pid) - stopping it"; kill "$pid" 2>/dev/null; fi
+  done
+  for i in $(seq 1 20); do port_busy "$port" || return 0; sleep 0.5; done
+  for pid in $(port_holders "$port"); do ours "$pid" && kill -9 "$pid" 2>/dev/null; done; sleep 1
+  port_busy "$port" || return 0
+  die "port $port ($key in $CFG) is used by another program:$(holder_text "$port") Stop that program - the port is fixed and is not changed automatically."
+}
 check_ports_free() {
-  local new
-  if [[ "$RPF_PORT" == 8090 ]] && ! running rpf; then RPF_PORT=7090; set_env PORT 7090; warn "port 8090 is the M-NVR's - RPF now defaults to 7090 (saved in .env)"; fi
-  if [[ "$CMS_PORT" == 8080 ]] && ! running cms; then CMS_PORT=7080; set_env CMS_PORT 7080; warn "port 8080 is the M-NVR's - CMS now defaults to 7080 (saved in .env)"; fi
-  if ! running cms && port_busy "$CMS_PORT"; then
-    new="$(find_free_port $((CMS_PORT + 1)) "$RPF_PORT")" || die "no free port found near $CMS_PORT (set CMS_PORT in .env)"
-    warn "port $CMS_PORT is used by another program - CMS will use $new instead (saved in .env as CMS_PORT)"
-    CMS_PORT="$new"; set_env CMS_PORT "$new"
-  fi
-  if ! running rpf && port_busy "$RPF_PORT"; then
-    new="$(find_free_port $((RPF_PORT + 1)) "$CMS_PORT")" || die "no free port found near $RPF_PORT (set PORT in .env)"
-    warn "port $RPF_PORT is used by another program - RPF will use $new instead (saved in .env as PORT)"
-    RPF_PORT="$new"; set_env PORT "$new"
-  fi
-  [[ "$RPF_PORT" != "$CMS_PORT" ]] || die "PORT (RPF) and CMS_PORT are both $RPF_PORT; choose different ports in .env"
+  [[ "$RPF_PORT" != "$CMS_PORT" ]] || die "RPF_PORT and CMS_PORT are both $RPF_PORT in $CFG; they must differ"
+  claim_port "$CMS_PORT" "CMS backend" CMS_PORT cms
+  claim_port "$RPF_PORT" "RPF" RPF_PORT rpf
 }
 
 print_logins() {
@@ -497,9 +522,9 @@ do_start() {
   [[ "$DEMO" == 1 ]] && start_sim
   say
   say "${C_GRN}Everything is up.${C_OFF}"
-  say "  RPF dashboard : http://localhost:$RPF_PORT"
-  say "  CMS console   : http://localhost:$CMS_PORT/console/   (demo logins: cms-operator / cms-zone1-admin / cms-super, password cms-demo-123)"
-  say "  CMS API   : http://localhost:$CMS_PORT   (health: /health)"
+  say "  RPF dashboard : http://$CFG_LOOPBACK_HOST:$RPF_PORT"
+  say "  CMS console   : http://$CFG_LOOPBACK_HOST:$CMS_PORT/console/   (demo logins: cms-operator / cms-zone1-admin / cms-super, password cms-demo-123)"
+  say "  CMS API   : http://$CFG_LOOPBACK_HOST:$CMS_PORT   (health: /health)"
   say "  Logs      : $LOGS/{cms,rpf,sim}.log   (bash scripts/start.sh logs)"
   print_logins
   say "  Stop      : bash scripts/start.sh stop"

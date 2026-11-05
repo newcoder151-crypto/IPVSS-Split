@@ -8,7 +8,7 @@
     ['Operations', [['dashboard', 'Control room'], ['queue', 'Alert queue', 'queue'], ['alerts', 'Alerts', 'unacked'], ['incidents', 'Incidents'], ['map', 'Live map']]],
     ['Footage', [['requests', 'Footage requests', 'decide'], ['footage', 'Delivered footage'], ['evidence', 'Evidence', 'archive_failed']]],
     ['Fleet', [['fleet', 'M-NVR fleet'], ['segments', 'Stored segments']]],
-    ['Administration', [['registry', 'Zones & posts'], ['users', 'Users', null, 'admin'], ['retention', 'Retention', null, 'admin'], ['settings', 'Settings', null, 'admin'], ['jobs', 'Jobs & health'], ['audit', 'Audit trail'], ['lab', 'Test lab', null, 'dev']]],
+    ['Administration', [['registry', 'Zones & posts'], ['users', 'Users', null, 'admin'], ['settings', 'Settings', null, 'admin'], ['audit', 'Audit trail']]],
   ];
   const visible = ([id, , , need]) => !need || (need === 'dev' ? !!(S.me && S.me.dev_tools) : C.isAdmin());
   const allViews = () => NAV.flatMap(([, items]) => items.filter(visible).map((i) => i[0]));
@@ -69,8 +69,9 @@
   function chime() { try { const a = new (window.AudioContext || window.webkitAudioContext)(); const o = a.createOscillator(); const g = a.createGain(); o.connect(g); g.connect(a.destination); o.frequency.value = 880; g.gain.value = 0.05; o.start(); o.stop(a.currentTime + 0.12); } catch (_) { /* no audio */ } }
   C.onLive.push((e) => {
     if (e.t === 'alert' && e.op === 'INSERT') { C.toast('New alert', 'alert'); chime(); }
-    else if (e.t === 'video_request' && e.op === 'INSERT') { C.toast('New footage request awaiting approval'); chime(); }
-    else if (e.t === 'delivered_footage' && e.op === 'INSERT') C.toast('Footage delivered to the post');
+    // ONE pop-up per request for a train. The per-camera requests CMS creates for it (video_request) and the files delivered
+    // (delivered_footage) are many events for the same request and raise nothing.
+    else if (e.t === 'train_request' && e.op === 'INSERT') { C.toast('New footage request for a train, awaiting approval'); chime(); }
     else if (e.t === 'evidence_flag' && e.op === 'INSERT') C.toast('Evidence flagged by a post - archiving');
   });
 
@@ -83,7 +84,7 @@
     C.liveStart();
     clearInterval(S.tick);
     // Safety net + things that change without a database write (NVR heartbeats, "x min ago" text).
-    S.tick = setInterval(() => { C.refreshCounts(); if (['fleet', 'map', 'dashboard', 'lab'].includes(S.view)) C.refresh({ live: true }); }, 5000);
+    S.tick = setInterval(() => { C.refreshCounts(); if (['fleet', 'map', 'dashboard'].includes(S.view)) C.refresh({ live: true }); }, 5000);
   }
   window.addEventListener('hashchange', () => { const v = location.hash.replace('#', ''); if (S.me && v !== S.view && allViews().includes(v)) C.go(v); });
   if (S.token) start(); else C.renderLogin();

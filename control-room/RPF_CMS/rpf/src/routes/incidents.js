@@ -1,7 +1,8 @@
 const express = require('express');
 const { pool, withTransaction } = require('../db');
 const { ackDelivery, setAlertStatus } = require('../services/alerts');
-const { createRequest, REQUEST_SELECT, footageForRequests } = require('../services/requests');
+const { footageForTrainRequests } = require('../services/requests');
+const { TRAIN_REQUEST_SELECT } = require('../services/trainRequests');
 const { postScopeSql, canSeePost } = require('../services/scope');
 const { audit } = require('../services/audit');
 const { parseId, parseLimit, parseTs, requireText } = require('../services/util');
@@ -48,8 +49,8 @@ router.get('/:id', wrap(async (req, res) => {
   const { rows } = await pool.query(`${INCIDENT_SELECT} WHERE i.id = $1`, [id]);
   const inc = rows[0];
   if (!inc || !canSeePost(req.user, inc.post_id, inc.zone_id)) throw notFound('incident not found');
-  const [reqs, flags, timeline] = await Promise.all([
-    pool.query(`${REQUEST_SELECT} WHERE r.incident_id = $1 AND r.post_id = $2 ORDER BY r.id DESC`, [id, inc.post_id]),
+  const [trainReqs, flags, timeline] = await Promise.all([
+    pool.query(`${TRAIN_REQUEST_SELECT} WHERE t.incident_id = $1 AND t.post_id = $2 ORDER BY t.id DESC`, [id, inc.post_id]),
     pool.query(
       `SELECT e.id, e.footage_id, e.retention, e.retain_to, e.status, e.archive_status, e.section_start_s, e.section_end_s, e.justification, e.flagged_at
          FROM evidence_flag e JOIN delivered_footage f ON f.id = e.footage_id JOIN video_request r ON r.id = f.video_request_id
@@ -66,8 +67,8 @@ router.get('/:id', wrap(async (req, res) => {
             AND NOT (COALESCE(h.note, '') ~* '(dispatched|escalated|forwarded) to ' AND position(lower($4) in lower(COALESCE(h.note, ''))) = 0)
        ) t ORDER BY t.occurred_at`, [id, inc.alert_delivery_id, inc.post_id, inc.post_name]),
 ]);
-  const footage = await footageForRequests(reqs.rows.map((r) => r.id));
-  res.json({ incident: inc, requests: reqs.rows, footage, flags: flags.rows, timeline: timeline.rows });
+  const footage = await footageForTrainRequests(trainReqs.rows.map((t) => t.id));
+  res.json({ incident: inc, train_requests: trainReqs.rows, footage, flags: flags.rows, timeline: timeline.rows });
 }));
 
 /**
@@ -186,37 +187,5 @@ router.post('/:id/notes', wrap(async (req, res) => {
   res.status(201).json({ ok: true });
 }));
 
-/**
- * POST /api/incidents/:id/requests - request footage for an incident.
- * Defaults: the incident's camera, occurred_at +/- 5 minutes (clamped to now).
- */
-router.post('/:id/requests', wrap(async (req, res) => {
-  const id = parseId(req.params.id);
-  const body = req.body || {};
-  const requestId = await withTransaction(async (client) => {
-    const { rows } = await client.query(
-      `SELECT i.post_id, i.status, i.occurred_at, i.camera_id AS inc_camera, d.alert_id, a.camera_id AS alert_camera
-         FROM incident i
-         LEFT JOIN alert_delivery d ON d.id = i.alert_delivery_id
-         LEFT JOIN alert a ON a.id = d.alert_id AND a.event_time = d.alert_event_time
-        WHERE i.id = $1`, [id]);
-    const inc = rows[0];
-    if (!inc || inc.post_id !== req.user.post_id) throw notFound('incident not found');
-    if (inc.status === 'closed') throw conflict('this incident is closed - footage can no longer be requested for it');
-
-    const camera = body.camera_id != null ? body.camera_id : (inc.inc_camera != null ? inc.inc_camera : inc.alert_camera);
-    if (camera == null) throw badRequest('this incident has no camera - choose a camera_id for the request');
-    const pad = 5 * 60000;
-    return createRequest(client, req.user, {
-      camera_id: camera,
-      window_start: body.window_start || new Date(inc.occurred_at.getTime() - pad).toISOString(),
-      window_end: body.window_end || new Date(Math.min(inc.occurred_at.getTime() + pad, Date.now())).toISOString(),
-      reason: body.reason,
-      alert_id: inc.alert_id,
-      incident_id: id,
-    });
-  });
-  res.status(201).json({ id: requestId, status: 'submitted' });
-}));
 
 module.exports = router;
