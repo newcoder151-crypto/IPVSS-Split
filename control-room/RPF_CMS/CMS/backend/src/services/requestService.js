@@ -463,7 +463,7 @@ async function fail(r, status, reason) {
         ref_entity: "video_request",
         ref_id: r.id,
         title: `Request #${r.id} ${status === "expired" ? "expired" : "failed"}`,
-        body: reason,
+        body: reason ? require("./reasons").shortReason(reason) : reason,
       });
   });
   await refreshParent(r);

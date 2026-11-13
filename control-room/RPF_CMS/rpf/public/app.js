@@ -2840,16 +2840,26 @@
       .trim();
     if (/no recording/i.test(s)) return "No recording for this window";
     if (/permission denied|footage store|EACCES|disk is full|ENOSPC/i.test(s))
-      return "CMS could not store the footage";
+      return "CMS storage problem";
     if (/files? .*(not on this PC|missing)/i.test(s))
       return "Recording files missing on the M-NVR";
     if (/removed from the fleet/i.test(s))
       return "M-NVR removed from the fleet";
-    if (/integrity/i.test(s)) return "Footage failed its integrity check";
+    if (/integrity/i.test(s)) return "Footage integrity check failure";
     if (/upload failed|keeps refusing|keeps answering/i.test(s))
-      return "Upload from the M-NVR failed";
+      return "M-NVR upload failure";
     const first = s.split(/[:.;|]/)[0].trim() || s;
     return first.length > 70 ? first.slice(0, 67) + "..." : first;
+  }
+  /** A notice's text for the pop-up and the bell: notices stored earlier with a long raw failure text are shortened the same way as on the request card. */
+  function noticeBody(n) {
+    const b = String(n.body || "");
+    return b.length > 120 &&
+      /no recording|upload failed|keeps refusing|footage store|integrity|permission denied/i.test(
+        b,
+      )
+      ? shortReason(b)
+      : b;
   }
   function renderTrainCameras(d, canFlag) {
     const byUnit = new Map();
@@ -4570,7 +4580,10 @@
       alert: "Alert",
     }[n.kind];
     if (n.body)
-      toast(n.body, kind, { title: n.title, onClick: () => openNotice(n) });
+      toast(noticeBody(n), kind, {
+        title: n.title,
+        onClick: () => openNotice(n),
+      });
     else toast(n.title, kind, { title: generic, onClick: () => openNotice(n) });
   }
   document.addEventListener("click", (e) => {
@@ -4664,7 +4677,7 @@
               "div",
               { class: "nbody" },
               h("div", { class: "nt" }, n.title),
-              n.body ? h("div", { class: "nb" }, n.body) : null,
+              n.body ? h("div", { class: "nb" }, noticeBody(n)) : null,
               h("div", { class: "nw" }, agoEl(n.created_at)),
               act,
             ),
