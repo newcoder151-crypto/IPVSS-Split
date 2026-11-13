@@ -282,9 +282,6 @@
                     n.health && n.health.ip
                       ? h("div", { class: "muted" }, n.health.ip)
                       : null,
-                    n.firmware
-                      ? h("div", { class: "muted" }, n.firmware)
-                      : null,
                   ),
                   h(
                     "td",
@@ -527,7 +524,6 @@
             ],
             ["Last contact", `${fmtTime(n.last_seen)} (${ago(n.last_seen)})`],
             ["Zone", n.zone_name],
-            ["Firmware", n.firmware || "-"],
             ["Position", C.mapLink(n.last_lat, n.last_lon)],
             [
               "Speed",

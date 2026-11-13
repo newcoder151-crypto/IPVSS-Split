@@ -4506,6 +4506,7 @@
         );
         if (res.local_error)
           toast(`The local copy could not be saved: ${res.local_error}`);
+        else if (res.local_note) toast(`Flagged. Note: ${res.local_note}`);
         close();
         if (onDone) onDone();
         await reopen();
@@ -4595,34 +4596,61 @@
       toast(ex.message, "err");
       return;
     }
+    const ackAll = h(
+      "button",
+      {
+        class: "btn sm",
+        onclick: async () => {
+          await api("/api/notifications/read", { method: "POST", body: {} });
+          box.classList.add("hidden");
+          poll();
+        },
+      },
+      "Acknowledge all",
+    );
     const head2 = h(
       "div",
       { class: "notif-head" },
       h("b", {}, "Notices"),
       h("span", { class: "spacer" }),
-      rows.some((n) => !n.read_at)
-        ? h(
-            "button",
-            {
-              class: "btn sm",
-              onclick: async () => {
-                await api("/api/notifications/read", {
-                  method: "POST",
-                  body: {},
-                });
-                box.classList.add("hidden");
-                poll();
-              },
-            },
-            "Mark all read",
-          )
-        : null,
+      rows.some((n) => !n.read_at) ? ackAll : null,
     );
     toastStyle();
     const items = rows.length
       ? rows.map((n) => {
           const k = noticeKind(n);
-          return h(
+          // each notice can be acknowledged on its own: it stays in the list (marked as acknowledged) and the panel stays open
+          const act = h("div", { class: "nact" });
+          const done = () =>
+            h("span", { class: "nack-done" }, ic("check", 12), " Acknowledged");
+          const ackBtn = h(
+            "button",
+            {
+              class: "btn sm nack",
+              title: "Acknowledge this notice (without opening it)",
+              onclick: async (ev) => {
+                ev.stopPropagation();
+                ackBtn.disabled = true;
+                try {
+                  await api("/api/notifications/read", {
+                    method: "POST",
+                    body: { ids: [n.id] },
+                  });
+                  n.read_at = new Date().toISOString();
+                  item.classList.remove("unread");
+                  act.replaceChildren(done());
+                  if (!rows.some((x) => !x.read_at)) ackAll.remove();
+                  poll();
+                } catch (ex) {
+                  ackBtn.disabled = false;
+                  toast(ex.message, "err");
+                }
+              },
+            },
+            "Acknowledge",
+          );
+          act.append(n.read_at ? done() : ackBtn);
+          const item = h(
             "div",
             {
               class: `notif-item ${n.read_at ? "" : "unread"}`,
@@ -4638,8 +4666,10 @@
               h("div", { class: "nt" }, n.title),
               n.body ? h("div", { class: "nb" }, n.body) : null,
               h("div", { class: "nw" }, agoEl(n.created_at)),
+              act,
             ),
           );
+          return item;
         })
       : [
           h(

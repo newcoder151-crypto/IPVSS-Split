@@ -2599,3 +2599,16 @@ body.drawer-open .ntoasts {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.notif-item .nact {
+  margin-top: 6px;
+}
+.notif-item .nack {
+  padding: 3px 10px;
+}
+.notif-item .nack-done {
+  color: var(--muted);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}

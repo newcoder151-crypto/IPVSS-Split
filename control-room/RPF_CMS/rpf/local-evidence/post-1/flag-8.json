@@ -1,0 +1,29 @@
+{
+  "flag_id": 8,
+  "saved_at": "2026-11-13T03:40:43.699Z",
+  "file": "flag-8.mp4",
+  "sha256": "6e0680311d1cfbd134e7ae564783a355472172bcc7cf130894bdf74afb5cfafa",
+  "size_bytes": 279801,
+  "post_id": 1,
+  "post_name": "RPF Post Kotdwar",
+  "footage_id": 67,
+  "request_id": 198,
+  "incident_id": null,
+  "camera": "Back Entrance",
+  "nvr": "Coach-A NVR",
+  "train_no": "12301",
+  "footage_start": "2026-11-13T03:35:00.000Z",
+  "section_start_s": 3,
+  "section_end_s": 4,
+  "section_from": "2026-11-13T03:35:03.000Z",
+  "section_to": "2026-11-13T03:35:04.000Z",
+  "entered": {
+    "retention": "permanent",
+    "retain_until": null,
+    "storage": "both",
+    "justification": "need",
+    "flagged_by": "anshika.sharma",
+    "flagged_at": "2026-11-13T03:40:43.684Z"
+  },
+  "source_footage_sha256": "4c54eab43fcf5a9dec8a0d56ad5ffdbfa49077fbfe9b1bf40bdea029a9dac91d"
+}

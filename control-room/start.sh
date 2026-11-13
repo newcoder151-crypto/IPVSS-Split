@@ -167,19 +167,25 @@ setup_media() {
   fix_media_permissions
 }
 
-# The CMS must be able to create files in every footage folder. Folders made by an earlier run with sudo / another user, or copied in
-# from an old install, are readable but not writable: every train upload then fails with "EACCES permission denied". Repaired here on each start.
-unwritable_in_media() { find "$MEDIA_DIR" \( -type d ! -writable -o -type f -name '*.part' ! -writable \) -print -quit 2>/dev/null; }
-fix_media_permissions() {
-  local bad me; me="$(id -un)"; bad="$(unwritable_in_media)"; [[ -z "$bad" ]] && return 0
-  warn "the footage folder has items '$me' cannot write to (for example ${bad#$MEDIA_DIR/}) - made by another user or an earlier sudo run; repairing"
-  chmod -R u+rwX "$MEDIA_DIR" 2>/dev/null; bad="$(unwritable_in_media)"
+unwritable_in() { find "$1" \( -type d ! -writable -o -type f \( -name '*.part' -o -name '*.mp4' -o -name '*.json' \) ! -writable \) -print -quit 2>/dev/null; }
+fix_dir_permissions() {   # $1 = folder, $2 = what it holds (for the messages)
+  local dir="$1" what="$2" bad me; me="$(id -un)"; [[ -d "$dir" ]] || return 0
+  bad="$(unwritable_in "$dir")"; [[ -z "$bad" ]] && return 0
+  warn "the $what folder has items '$me' cannot write to (for example ${bad#$dir/}) - made by another user or an earlier sudo run; repairing"
+  chmod -R u+rwX "$dir" 2>/dev/null; bad="$(unwritable_in "$dir")"
   if [[ -n "$bad" ]]; then
-    if [[ $EUID -ne 0 ]] && command -v sudo >/dev/null; then sudo chown -R "$(id -u):$(id -g)" "$MEDIA_DIR" && sudo chmod -R u+rwX "$MEDIA_DIR"; fi
-    bad="$(unwritable_in_media)"
+    if [[ $EUID -ne 0 ]] && command -v sudo >/dev/null; then sudo chown -R "$(id -u):$(id -g)" "$dir" && sudo chmod -R u+rwX "$dir"; fi
+    bad="$(unwritable_in "$dir")"
   fi
-  if [[ -z "$bad" ]]; then say "footage folder permissions repaired ($MEDIA_DIR)"; else
-    warn "still not writable: ${bad#$MEDIA_DIR/} - train uploads will fail. Run once:  sudo chown -R $me $MEDIA_DIR"; fi
+  if [[ -z "$bad" ]]; then say "$what folder permissions repaired ($dir)"; else
+    warn "still not writable: ${bad#$dir/} - $what will fail. Run once:  sudo chown -R $me $dir"; fi
+}
+# The CMS must be able to create files in every footage folder, and the RPF in its local-evidence folder. Folders made by an earlier run with sudo /
+# another user, or copied in from an old install, are readable but not writable: train uploads / "keep a local copy" then fail with EACCES.
+fix_media_permissions() {
+  fix_dir_permissions "$MEDIA_DIR" "footage (train uploads)"
+  local le="${LOCAL_EVIDENCE_DIR:-$ROOT/RPF_CMS/rpf/local-evidence}"; [[ "$le" = /* ]] || le="$ROOT/RPF_CMS/rpf/$le"
+  fix_dir_permissions "$le" "local evidence (RPF copies kept at the post)"
 }
 
 # Old copies of CMS / RPF / bridge / M-NVR API left running from ANOTHER folder (an earlier install) keep their own footage
