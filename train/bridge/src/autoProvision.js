@@ -7,69 +7,238 @@
  *   cameras                   <- every M-NVR camera (added if missing, same name), numbered by the M-NVR's own camera id
  *                                (CAMERA_NO_MAP="mnvrCameraId:cameraNo,..." overrides)
  *   => every recording is named  <TRAIN>_M<nn>_C<nn>_<start>_<end>.mp4  (train number, M-NVR no., camera no.)
- * Writes only registry DATA into the CMS database (needs CMS_DB_* settings). Safe to run on every start.
+ * The unit enrols itself over the CMS web port (POST /nvr/v1/enroll): it appears in the fleet by itself, a unit registered in the console with the
+ * same name is claimed, and a second M-NVR with the same name becomes its own unit - it never takes over another one. Nothing else is needed.
+ * Only against an older CMS without that call does it fall back to writing the registry rows straight into the CMS database (CMS_DB_* settings).
+ * Safe to run on every start.
  */
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-const { Pool } = require('pg');
-const config = require('./config');
-const mnvr = require('./mnvrDb');
-const log = require('./log')('provision');
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const { Pool } = require("pg");
+const config = require("./config");
+const mnvr = require("./mnvrDb");
+const cms = require("./cmsClient");
+const log = require("./log")("provision");
 
 async function ensureRegistered() {
   const e = process.env;
-  const idFile = path.join(config.stateDir, 'identity.json');
+  const idFile = path.join(config.stateDir, "identity.json");
   fs.mkdirSync(config.stateDir, { recursive: true });
-  let ident = {}; try { ident = JSON.parse(fs.readFileSync(idFile, 'utf8')); } catch (_) { /* first run */ }
+  let ident = {};
+  try {
+    ident = JSON.parse(fs.readFileSync(idFile, "utf8"));
+  } catch (_) {
+    /* first run */
+  }
 
   const info = await mnvr.deviceInfo();
-  const name = e.NVR_NAME || info.device_name || 'MNVR-001';
-  const trainNo = e.TRAIN_NO || info.train_number || null;
-  const wantedUnitNo = config.mnvrNo || (Number.isInteger(Number(info.mnvr_number)) && Number(info.mnvr_number) > 0 ? Number(info.mnvr_number) : null);
-  if (wantedUnitNo != null && (wantedUnitNo < 1 || wantedUnitNo > 99)) throw new Error(`MNVR_NO must be 1..99 (got ${wantedUnitNo})`);
-  const fp = config.fingerprint || ident.fingerprint || `fp-${crypto.randomBytes(16).toString('hex')}`;
+  const name = e.NVR_NAME || info.device_name || "MNVR-001";
+  const trainNo = require("./trainNo")(info) || null;
+  const wantedUnitNo =
+    config.mnvrNo ||
+    (Number.isInteger(Number(info.mnvr_number)) && Number(info.mnvr_number) > 0
+      ? Number(info.mnvr_number)
+      : null);
+  if (wantedUnitNo != null && (wantedUnitNo < 1 || wantedUnitNo > 99))
+    throw new Error(`MNVR_NO must be 1..99 (got ${wantedUnitNo})`);
+  const fp =
+    config.fingerprint ||
+    ident.fingerprint ||
+    `fp-${crypto.randomBytes(16).toString("hex")}`;
 
-  const db = new Pool({ host: e.CMS_DB_HOST || 'localhost', port: Number(e.CMS_DB_PORT || 5432), database: e.CMS_DB_NAME || 'cms', user: e.CMS_DB_USER || 'cms', password: e.CMS_DB_PASSWORD || '', max: 2 });
+  // 1) the normal way: enrol over HTTP
+  if (!e.REGISTER_VIA_DB) {
+    config.fingerprint = fp;
+    try {
+      const r = await cms.call("POST", "/enroll", {
+        headers: e.ENROLL_KEY ? { "X-Enroll-Key": e.ENROLL_KEY } : {},
+        json: {
+          fingerprint: fp,
+          name,
+          train_no: trainNo || undefined,
+          unit_no: wantedUnitNo || undefined,
+          zone: e.ZONE || undefined,
+          firmware: info.firmware_version || undefined,
+        },
+      });
+      fs.writeFileSync(
+        idFile,
+        JSON.stringify(
+          { fingerprint: fp, name: r.name, train_no: trainNo },
+          null,
+          2,
+        ),
+      );
+      if (r.enrolled === "new")
+        log.info(
+          `enrolled as a NEW unit '${r.name}' - it now shows in the CMS fleet${r.name !== name ? ` (the name '${name}' was already taken by another unit)` : ""}`,
+        );
+      else if (r.enrolled === "restored")
+        log.info(
+          `this M-NVR had been removed in the CMS console - it is back in the fleet as '${r.name}'`,
+        );
+      else if (r.enrolled === "claimed")
+        log.info(
+          `claimed the unit '${r.name}' that was registered in the CMS console`,
+        );
+      if (!trainNo)
+        log.warn(
+          "this M-NVR has no train number (set TRAIN_NO / start.sh --train-no): requests BY TRAIN NUMBER will not reach it",
+        );
+      return { name: r.name, trainNo, fingerprint: fp };
+    } catch (err) {
+      if (err.status !== 404) throw err;
+      log.warn(
+        "this CMS has no /enroll call - registering through its database instead",
+      );
+    }
+  }
+  // 2) older CMS: write the registry rows into its database
+  const db = new Pool({
+    host: e.CMS_DB_HOST || "localhost",
+    port: Number(e.CMS_DB_PORT || 5432),
+    database: e.CMS_DB_NAME || "cms",
+    user: e.CMS_DB_USER || "cms",
+    password: e.CMS_DB_PASSWORD || "",
+    max: 2,
+  });
   try {
-    const zones = (await db.query('SELECT id, name FROM zone ORDER BY id')).rows;
-    if (!zones.length) throw new Error('CMS has no zones yet - create one in the CMS console (or load its fixtures)');
+    const zones = (await db.query("SELECT id, name FROM zone ORDER BY id"))
+      .rows;
+    if (!zones.length)
+      throw new Error(
+        "CMS has no zones yet - create one in the CMS console (or load its fixtures)",
+      );
     const zone = (e.ZONE && zones.find((z) => z.name === e.ZONE)) || zones[0];
 
-    let unit = (await db.query('SELECT id FROM nvr_unit WHERE cert_fingerprint = $1', [fp])).rows[0]
-            || (await db.query('SELECT id FROM nvr_unit WHERE name = $1', [name])).rows[0];
-    if (unit) await db.query('UPDATE nvr_unit SET cert_fingerprint = $2, name = $3 WHERE id = $1', [unit.id, fp, name]);
-    else { unit = (await db.query('INSERT INTO nvr_unit (name, cert_fingerprint, current_zone_id) VALUES ($1,$2,$3) RETURNING id', [name, fp, zone.id])).rows[0]; log.info(`registered '${name}' in CMS zone '${zone.name}'`); }
+    let unit =
+      (
+        await db.query("SELECT id FROM nvr_unit WHERE cert_fingerprint = $1", [
+          fp,
+        ])
+      ).rows[0] ||
+      (
+        await db.query(
+          "SELECT id FROM nvr_unit WHERE name = $1 AND cert_fingerprint LIKE 'pending-%'",
+          [name],
+        )
+      ).rows[0];
+    if (unit)
+      await db.query(
+        "UPDATE nvr_unit SET cert_fingerprint = $2, name = $3 WHERE id = $1",
+        [unit.id, fp, name],
+      );
+    else {
+      const taken = (
+        await db.query("SELECT 1 FROM nvr_unit WHERE lower(name) = lower($1)", [
+          name,
+        ])
+      ).rowCount;
+      unit = (
+        await db.query(
+          "INSERT INTO nvr_unit (name, cert_fingerprint, current_zone_id) VALUES ($1,$2,$3) RETURNING id",
+          [taken ? `${name} (${fp.slice(3, 7)})` : name, fp, zone.id],
+        )
+      ).rows[0];
+      log.info(`registered '${name}' in CMS zone '${zone.name}'`);
+    }
     // train: the unit joins the train whose number it reports; its M-NVR number comes from MNVR_NO / the M-NVR setting (else the CMS gives it the next free one)
-    if (trainNo) await db.query('UPDATE nvr_unit SET train_no = $2 WHERE id = $1', [unit.id, trainNo]);
-    else log.warn('this M-NVR has no train number (set train_number in its settings or TRAIN_NO): requests BY TRAIN NUMBER will not reach it');
+    if (trainNo)
+      await db.query("UPDATE nvr_unit SET train_no = $2 WHERE id = $1", [
+        unit.id,
+        trainNo,
+      ]);
+    else
+      log.warn(
+        "this M-NVR has no train number (set train_number in its settings or TRAIN_NO): requests BY TRAIN NUMBER will not reach it",
+      );
     if (wantedUnitNo != null) {
-      try { await db.query('UPDATE nvr_unit SET unit_no = $2 WHERE id = $1 AND unit_no IS DISTINCT FROM $2', [unit.id, wantedUnitNo]); }
-      catch (err) {
-        if (err.code !== '23505') throw err;
-        const other = (await db.query('SELECT name FROM nvr_unit WHERE lower(btrim(train_no)) = lower(btrim($3)) AND unit_no = $2 AND id <> $1', [unit.id, wantedUnitNo, trainNo])).rows[0];
-        throw new Error(`M-NVR number ${wantedUnitNo} is already used in train ${trainNo} by '${other ? other.name : 'another unit'}' - give each M-NVR of a train its own MNVR_NO`);
+      try {
+        await db.query(
+          "UPDATE nvr_unit SET unit_no = $2 WHERE id = $1 AND unit_no IS DISTINCT FROM $2",
+          [unit.id, wantedUnitNo],
+        );
+      } catch (err) {
+        if (err.code !== "23505") throw err;
+        const other = (
+          await db.query(
+            "SELECT name FROM nvr_unit WHERE lower(btrim(train_no)) = lower(btrim($3)) AND unit_no = $2 AND id <> $1",
+            [unit.id, wantedUnitNo, trainNo],
+          )
+        ).rows[0];
+        throw new Error(
+          `M-NVR number ${wantedUnitNo} is already used in train ${trainNo} by '${other ? other.name : "another unit"}' - give each M-NVR of a train its own MNVR_NO`,
+        );
       }
     }
-    const cur = (await db.query('SELECT current_zone_id FROM nvr_unit WHERE id = $1', [unit.id])).rows[0].current_zone_id;
-    if (cur == null) await db.query('UPDATE nvr_unit SET current_zone_id = $2 WHERE id = $1', [unit.id, zone.id]);
-    if (!(await db.query('SELECT 1 FROM nvr_zone_assignment WHERE nvr_id = $1 AND assigned_until IS NULL', [unit.id])).rowCount)
-      await db.query(`INSERT INTO nvr_zone_assignment (nvr_id, zone_id, assigned_from) VALUES ($1,$2, now() - interval '1 day')`, [unit.id, cur || zone.id]);
+    const cur = (
+      await db.query("SELECT current_zone_id FROM nvr_unit WHERE id = $1", [
+        unit.id,
+      ])
+    ).rows[0].current_zone_id;
+    if (cur == null)
+      await db.query("UPDATE nvr_unit SET current_zone_id = $2 WHERE id = $1", [
+        unit.id,
+        zone.id,
+      ]);
+    if (
+      !(
+        await db.query(
+          "SELECT 1 FROM nvr_zone_assignment WHERE nvr_id = $1 AND assigned_until IS NULL",
+          [unit.id],
+        )
+      ).rowCount
+    )
+      await db.query(
+        `INSERT INTO nvr_zone_assignment (nvr_id, zone_id, assigned_from) VALUES ($1,$2, now() - interval '1 day')`,
+        [unit.id, cur || zone.id],
+      );
 
     // cameras: read straight from the M-NVR; the camera number is the M-NVR's own camera id (CAMERA_NO_MAP can override it).
     // (The same list is pushed to the CMS on every connect too - see index.js - so a camera added later is picked up without re-registering.)
     let added = 0;
-    const camNo = (c) => { const n = config.cameraNoMap.get(c.camera_id) ?? c.camera_id; return Number.isInteger(n) && n >= 1 && n <= 999 ? n : null; };
+    const camNo = (c) => {
+      const n = config.cameraNoMap.get(c.camera_id) ?? c.camera_id;
+      return Number.isInteger(n) && n >= 1 && n <= 999 ? n : null;
+    };
     for (const c of await mnvr.cameras()) {
       const no = camNo(c);
-      if (no == null) { log.warn(`M-NVR camera '${c.camera_name}' has an id that cannot be used as a camera number (${c.camera_id}); the CMS numbers it`); }
-      const row = (await db.query('SELECT id, mnvr_camera_id FROM camera WHERE nvr_id = $1 AND (mnvr_camera_id = $2 OR (mnvr_camera_id IS NULL AND lower(name) = lower($3))) ORDER BY (mnvr_camera_id = $2) DESC NULLS LAST LIMIT 1', [unit.id, no, c.camera_name])).rows[0];
-      if (row) { if (no != null && row.mnvr_camera_id !== no) await db.query('UPDATE camera SET mnvr_camera_id = $2 WHERE id = $1', [row.id, no]).catch((e) => log.warn(`camera '${c.camera_name}': ${e.message}`)); }
-      else { await db.query('INSERT INTO camera (nvr_id, name, mount_position, mnvr_camera_id) VALUES ($1,$2,$3,$4)', [unit.id, c.camera_name, c.location_description || null, no]); added++; }
+      if (no == null) {
+        log.warn(
+          `M-NVR camera '${c.camera_name}' has an id that cannot be used as a camera number (${c.camera_id}); the CMS numbers it`,
+        );
+      }
+      const row = (
+        await db.query(
+          "SELECT id, mnvr_camera_id FROM camera WHERE nvr_id = $1 AND (mnvr_camera_id = $2 OR (mnvr_camera_id IS NULL AND lower(name) = lower($3))) ORDER BY (mnvr_camera_id = $2) DESC NULLS LAST LIMIT 1",
+          [unit.id, no, c.camera_name],
+        )
+      ).rows[0];
+      if (row) {
+        if (no != null && row.mnvr_camera_id !== no)
+          await db
+            .query("UPDATE camera SET mnvr_camera_id = $2 WHERE id = $1", [
+              row.id,
+              no,
+            ])
+            .catch((e) => log.warn(`camera '${c.camera_name}': ${e.message}`));
+      } else {
+        await db.query(
+          "INSERT INTO camera (nvr_id, name, mount_position, mnvr_camera_id) VALUES ($1,$2,$3,$4)",
+          [unit.id, c.camera_name, c.location_description || null, no],
+        );
+        added++;
+      }
     }
     if (added) log.info(`added ${added} camera(s) to CMS`);
-  } finally { await db.end(); }
-  fs.writeFileSync(idFile, JSON.stringify({ fingerprint: fp, name, train_no: trainNo }, null, 2));
+  } finally {
+    await db.end();
+  }
+  fs.writeFileSync(
+    idFile,
+    JSON.stringify({ fingerprint: fp, name, train_no: trainNo }, null, 2),
+  );
   config.fingerprint = fp;
   return { name, trainNo, fingerprint: fp };
 }

@@ -1,20 +1,26 @@
-require('dotenv').config();
-const path = require('path');
-const crypto = require('crypto');
+require("dotenv").config();
+const path = require("path");
+const crypto = require("crypto");
 
-const int = (name, dflt) => { const v = Number(process.env[name]); return Number.isFinite(v) && v > 0 ? v : dflt; };
+const int = (name, dflt) => {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? v : dflt;
+};
 
-let jwtSecret = process.env.CMS_JWT_SECRET || process.env.JWT_SECRET || '';
+let jwtSecret = process.env.CMS_JWT_SECRET || process.env.JWT_SECRET || "";
 let ephemeralSecret = false;
-if (jwtSecret.length < 32) { jwtSecret = crypto.randomBytes(48).toString('hex'); ephemeralSecret = true; }
+if (jwtSecret.length < 32) {
+  jwtSecret = crypto.randomBytes(48).toString("hex");
+  ephemeralSecret = true;
+}
 
 module.exports = {
-  version: '0.2.1',
+  version: "0.2.1",
   // Hosts, ports and database names are NOT defaulted here: config/control-room.conf is the one place, start.sh hands them over (see main() in server.js).
   port: process.env.PORT ? Number(process.env.PORT) : undefined,
   // If the port is taken, try the next ones (development). Off in production, or with PORT_AUTO=0.
-  portAuto: process.env.PORT_AUTO === '1',   // off unless asked for: the port is fixed (config/control-room.conf), the server never wanders to port+1
-  env: process.env.NODE_ENV || 'development',
+  portAuto: process.env.PORT_AUTO === "1", // off unless asked for: the port is fixed (config/control-room.conf), the server never wanders to port+1
+  env: process.env.NODE_ENV || "development",
   db: {
     host: process.env.DB_HOST,
     port: process.env.DB_PORT ? Number(process.env.DB_PORT) : undefined,
@@ -22,31 +28,48 @@ module.exports = {
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
   },
-  jwtSecret, ephemeralSecret,
-  sessionHours: int('SESSION_HOURS', 8),
+  jwtSecret,
+  ephemeralSecret,
+  sessionHours: int("SESSION_HOURS", 8),
   // Footage store (object-storage stand-in). Shared with the RPF server, which reads delivered
   // footage and archived clips from the same root.
-  mediaRoot: path.resolve(process.env.MEDIA_ROOT || path.join(__dirname, '..', '..', 'media')),
-  footageLinkMinutes: int('FOOTAGE_LINK_MINUTES', 15),
-  workers: process.env.CMS_WORKERS !== '0',
+  mediaRoot: path.resolve(
+    process.env.MEDIA_ROOT || path.join(__dirname, "..", "..", "media"),
+  ),
+  footageLinkMinutes: int("FOOTAGE_LINK_MINUTES", 15),
+  workers: process.env.CMS_WORKERS !== "0",
   // Defaults for runtime settings (the console overrides them in the `setting` table).
   defaults: {
-    priority_threshold: int('PRIORITY_THRESHOLD', 7),   // >= : auto-dispatch to nearest post + incident
-    escalation_minutes: int('ESCALATION_MINUTES', 10),  // unacknowledged this long -> next post
-    low_priority_mode: ['auto_deliver', 'operator_queue'].includes(process.env.LOW_PRIORITY_MODE) ? process.env.LOW_PRIORITY_MODE : 'auto_deliver',   // alerts below the threshold: deliver to the nearest post, or hold for an operator
-    request_max_window_min: int('MAX_REQUEST_WINDOW_MIN', 240),
-    retention_days: int('RETENTION_DAYS', 30),          // 30-day FIFO on raw segments
-    request_expiry_days: int('REQUEST_EXPIRY_DAYS', 0),// 0 = never: a request waits for its NVR however long it takes (>0 = give up after this many days)
-    nvr_offline_after_s: int('NVR_OFFLINE_AFTER_S', 60),
-    auto_approve_requests: process.env.AUTO_APPROVE_REQUESTS === '1',
-    retention_auto: process.env.RETENTION_AUTO !== '0',
-    notify_webhook_url: process.env.NOTIFY_WEBHOOK_URL || '',
+    priority_threshold: int("PRIORITY_THRESHOLD", 7), // >= : auto-dispatch to nearest post + incident
+    escalation_minutes: int("ESCALATION_MINUTES", 10), // unacknowledged this long -> next post
+    low_priority_mode: ["auto_deliver", "operator_queue"].includes(
+      process.env.LOW_PRIORITY_MODE,
+    )
+      ? process.env.LOW_PRIORITY_MODE
+      : "auto_deliver", // alerts below the threshold: deliver to the nearest post, or hold for an operator
+    request_max_window_min: int("MAX_REQUEST_WINDOW_MIN", 240),
+    retention_days: int("RETENTION_DAYS", 30), // 30-day FIFO on raw segments
+    request_expiry_days: int("REQUEST_EXPIRY_DAYS", 0), // 0 = never: a request waits for its NVR however long it takes (>0 = give up after this many days)
+    nvr_offline_after_s: int("NVR_OFFLINE_AFTER_S", 60),
+    auto_approve_requests: process.env.AUTO_APPROVE_REQUESTS === "1",
+    auto_enroll_nvr: process.env.AUTO_ENROLL_NVR !== "0", // a new M-NVR that connects is added to the fleet by itself
+    reenrol_removed_nvr: process.env.NVR_RESTORE_REMOVED !== "0", // a removed M-NVR that is still running comes back by itself (e.g. deleted by mistake)
+    retention_auto: process.env.RETENTION_AUTO !== "0",
+    notify_webhook_url: process.env.NOTIFY_WEBHOOK_URL || "",
   },
+  // Optional shared secret a new M-NVR must present (header X-Enroll-Key) to enrol itself. Empty = any unit that can reach the CMS may enrol.
+  nvrEnrollKey: process.env.NVR_ENROLL_KEY || "",
   // Test lab in the console (send alerts as an NVR, put a train in a tunnel). On in development, off in production.
-  devTools: process.env.DEV_TOOLS ? process.env.DEV_TOOLS === '1' : process.env.NODE_ENV !== 'production',
+  devTools: process.env.DEV_TOOLS
+    ? process.env.DEV_TOOLS === "1"
+    : process.env.NODE_ENV !== "production",
   // Where the M-NVR simulator looks for its offline flags (must match the simulator's SIM_DIR / CMS/run).
-  simDir: path.resolve(process.env.SIM_DIR || path.join(__dirname, '..', '..', 'run')),
-  ffmpeg: process.env.FFMPEG_PATH || 'ffmpeg',
-  ffprobe: process.env.FFPROBE_PATH || 'ffprobe',
-  legacyApi: process.env.LEGACY_API ? process.env.LEGACY_API === '1' : (process.env.NODE_ENV !== 'production'),
+  simDir: path.resolve(
+    process.env.SIM_DIR || path.join(__dirname, "..", "..", "run"),
+  ),
+  ffmpeg: process.env.FFMPEG_PATH || "ffmpeg",
+  ffprobe: process.env.FFPROBE_PATH || "ffprobe",
+  legacyApi: process.env.LEGACY_API
+    ? process.env.LEGACY_API === "1"
+    : process.env.NODE_ENV !== "production",
 };

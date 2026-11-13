@@ -131,14 +131,31 @@ async function run(cmd) {
   try {
     if (cmd.status !== "acked") await report(cmd.id, "ack");
     const r = await uploader.uploadWindow(cmd.camera_id, from, to, label, tr);
-    await report(cmd.id, "done", { missing: r.missing });
-    tr.set({
-      status: r.missing.length ? "partial" : "completed",
+    await report(cmd.id, "done", {
       missing: r.missing,
-      message: r.missing.length
-        ? `${r.missing.length} part(s) of the window were not recorded`
-        : null,
+      note: r.note || undefined,
     });
+    const nothing = !r.uploaded && !r.already && r.missing.length; // not a partial delivery: there was nothing to send at all
+    tr.set(
+      nothing
+        ? {
+            status: "failed",
+            missing: r.missing,
+            error: String(
+              r.note || "nothing was recorded in this window",
+            ).slice(0, 400),
+            message: r.note || null,
+          }
+        : {
+            status: r.missing.length ? "partial" : "completed",
+            missing: r.missing,
+            message:
+              r.note ||
+              (r.missing.length
+                ? `${r.missing.length} part(s) of the window were not recorded`
+                : null),
+          },
+    );
     stats.done++;
   } catch (e) {
     if (e.cancelled) {

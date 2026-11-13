@@ -84,6 +84,8 @@ const config = {
   chunkBytes: num("CHUNK_BYTES", 1024 * 1024),
   uploadPatienceH: num("UPLOAD_PATIENCE_H", 24), // how long a transfer waits for the signal before giving up (it is retried later anyway)
   uploadMaxKbps: num("UPLOAD_MAX_KBPS", 0), // 0 = unlimited
+  // the clock people read in the notes shown on the M-NVR and in RPF: Indian Standard Time (UTC+5:30) unless DISPLAY_TZ_MIN says otherwise
+  displayTzMin: num("DISPLAY_TZ_MIN", 330),
   serverPatienceS: num("SERVER_PATIENCE_S", 600), // how long a transfer keeps retrying while CMS ANSWERS with errors (5xx) before it is failed and the slot freed
   uploadConcurrency: Math.max(1, num("UPLOAD_CONCURRENCY", 2)),
   openSegmentExtraWaitS: num("OPEN_SEGMENT_EXTRA_WAIT_S", 75), // + segment length: how long to wait for the segment being recorded

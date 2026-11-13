@@ -9,16 +9,181 @@
  * The unit authenticates with its certificate fingerprint (mTLS at the gateway in production).
  */
 const express = require("express");
-const { pool } = require("../db");
-const { requireNvr } = require("../middleware/auth");
+const { pool, withTransaction } = require("../db");
+const config = require("../config");
+const settings = require("../services/settings");
+const { audit } = require("../services/audit");
+const { requireNvr, restoreRemoved } = require("../middleware/auth");
 const { ingestAlert } = require("../services/alertService");
 const seg = require("../services/segmentService");
 const reqs = require("../services/requestService");
 const { parseId } = require("../services/util");
 const live = require("../services/live");
-const { badRequest, notFound, conflict, wrap } = require("../errors");
+const {
+  badRequest,
+  notFound,
+  conflict,
+  forbidden,
+  unauthorized,
+  wrap,
+} = require("../errors");
 
 const router = express.Router();
+
+/** The train / M-NVR number a unit declares (over HTTP, together with its cameras): validated, then applied to its row. */
+async function applyIdentity(nvrId, ib) {
+  const trainNo =
+    typeof ib.train_no === "string" ? ib.train_no.trim().slice(0, 60) : "";
+  const wantUnit =
+    ib.unit_no == null || ib.unit_no === "" ? null : Number(ib.unit_no);
+  if (
+    wantUnit != null &&
+    (!Number.isInteger(wantUnit) || wantUnit < 1 || wantUnit > 99)
+  )
+    throw badRequest("unit_no must be 1..99");
+  if (!trainNo && wantUnit == null) return;
+  try {
+    if (wantUnit != null)
+      await pool.query(
+        `UPDATE nvr_unit SET train_no = COALESCE(NULLIF($3::text, ''), train_no), unit_no = $2::int WHERE id = $1 AND (unit_no IS DISTINCT FROM $2::int OR ($3::text <> '' AND train_no IS DISTINCT FROM $3::text))`,
+        [nvrId, wantUnit, trainNo],
+      );
+    else
+      await pool.query(
+        `UPDATE nvr_unit SET train_no = $2::text, unit_no = NULL WHERE id = $1 AND train_no IS DISTINCT FROM $2::text`,
+        [nvrId, trainNo],
+      ); // a different train: re-numbered by the next sync
+  } catch (e) {
+    if (e.code === "23505")
+      throw conflict(
+        `M-NVR number ${wantUnit} is already used in train ${trainNo || "this train"} by another unit - give each M-NVR of a train its own number`,
+      );
+    throw e;
+  }
+}
+const clientIp = (req) =>
+  String(req.ip || req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+
+/**
+ * POST /enroll { fingerprint, name, train_no?, unit_no?, zone? } - the one call a unit makes WITHOUT being known yet (everything else needs its
+ * fingerprint to be registered). It is how a new M-NVR appears in the fleet by itself:
+ *   - its fingerprint is already known            -> nothing changes
+ *   - a unit of that NAME was registered in the console and is still waiting -> the unit claims it
+ *   - otherwise a NEW unit is added (name made unique: 'MNVR-001 (2)'), never taking over another unit's row - unless auto-enrolment is switched off.
+ * An optional shared secret (NVR_ENROLL_KEY) can be required.
+ */
+router.post(
+  "/enroll",
+  wrap(async (req, res) => {
+    if (config.nvrEnrollKey && req.get("x-enroll-key") !== config.nvrEnrollKey)
+      throw unauthorized("wrong or missing enrolment key");
+    const b = req.body || {};
+    const fp = typeof b.fingerprint === "string" ? b.fingerprint.trim() : "";
+    if (fp.length < 16 || fp.length > 200 || fp.startsWith("pending-"))
+      throw badRequest("fingerprint is required");
+    const name =
+      (typeof b.name === "string" ? b.name.trim() : "").slice(0, 70) || "MNVR";
+    const attempt = () =>
+      withTransaction(async (client) => {
+        let { rows } = await client.query(
+          "SELECT id, name, status, current_zone_id FROM nvr_unit WHERE cert_fingerprint = $1",
+          [fp],
+        );
+        if (rows[0]) {
+          if (rows[0].status !== "removed") return { ...rows[0], how: "known" };
+          if (!(await settings.get("reenrol_removed_nvr")))
+            throw forbidden("NVR is removed");
+          const back = await restoreRemoved(rows[0].id);
+          return { ...rows[0], ...(back || {}), how: "restored" };
+        }
+        ({ rows } = await client.query(
+          `SELECT id, name, status, current_zone_id FROM nvr_unit WHERE lower(name) = lower($1) AND cert_fingerprint LIKE 'pending-%' AND status <> 'removed' FOR UPDATE`,
+          [name],
+        ));
+        if (rows[0]) {
+          await client.query(
+            "UPDATE nvr_unit SET cert_fingerprint = $2 WHERE id = $1",
+            [rows[0].id, fp],
+          );
+          await audit(client, {
+            user: null,
+            action: "nvr.claim",
+            entity: "nvr_unit",
+            entityId: rows[0].id,
+            zoneId: rows[0].current_zone_id,
+            details: { name, from: clientIp(req) },
+          });
+          return { ...rows[0], how: "claimed" };
+        }
+        if (!(await settings.get("auto_enroll_nvr")))
+          throw forbidden(
+            `automatic enrolment is switched off - register this M-NVR in the CMS console first (Fleet -> Register NVR, name '${name}')`,
+          );
+        const zones = (
+          await client.query("SELECT id, name FROM zone ORDER BY id")
+        ).rows;
+        if (!zones.length)
+          throw conflict(
+            "the CMS has no zones yet - create one in the console first",
+          );
+        const zone =
+          (typeof b.zone === "string" &&
+            zones.find((z) => z.name === b.zone)) ||
+          zones[0];
+        let unique = name;
+        for (
+          let n = 2;
+          (
+            await client.query(
+              "SELECT 1 FROM nvr_unit WHERE lower(name) = lower($1)",
+              [unique],
+            )
+          ).rowCount;
+          n++
+        )
+          unique = `${name} (${n})`;
+        const ins = await client.query(
+          `INSERT INTO nvr_unit (name, cert_fingerprint, current_zone_id) VALUES ($1,$2,$3) RETURNING id, name, status, current_zone_id`,
+          [unique, fp, zone.id],
+        );
+        await client.query(
+          `INSERT INTO nvr_zone_assignment (nvr_id, zone_id, assigned_from) VALUES ($1,$2, now() - interval '1 day')`,
+          [ins.rows[0].id, zone.id],
+        );
+        await audit(client, {
+          user: null,
+          action: "nvr.enrol",
+          entity: "nvr_unit",
+          entityId: ins.rows[0].id,
+          zoneId: zone.id,
+          details: { name: unique, asked_name: name, from: clientIp(req) },
+        });
+        return { ...ins.rows[0], how: "new" };
+      });
+    let u;
+    try {
+      u = await attempt();
+    } catch (e) {
+      if (e.code === "23505") u = await attempt();
+      else throw e;
+    } // two enrolments of one unit at once
+    await applyIdentity(u.id, b);
+    await pool.query(
+      `UPDATE nvr_unit SET last_seen = now(), health = COALESCE(health, '{}'::jsonb) || jsonb_build_object('ip', $2::text) WHERE id = $1`,
+      [u.id, clientIp(req)],
+    );
+    res
+      .status(u.how === "new" ? 201 : 200)
+      .json({
+        id: u.id,
+        name: u.name,
+        status: u.status,
+        zone_id: u.current_zone_id,
+        enrolled: u.how,
+      });
+  }),
+);
+
 router.use(requireNvr);
 router.use(
   wrap(async (req, res, next) => {
@@ -94,38 +259,8 @@ router.get(
 router.post(
   "/cameras/sync",
   wrap(async (req, res) => {
-    // The unit also declares WHICH TRAIN it rides on (and its M-NVR number in it) over this same authenticated channel, so it never needs a
-    // database link to the CMS just to take part in train requests. Applied first: a bad camera list must not lose the identity.
-    const ib = req.body || {};
-    const trainNo =
-      typeof ib.train_no === "string" ? ib.train_no.trim().slice(0, 60) : "";
-    const wantUnit =
-      ib.unit_no == null || ib.unit_no === "" ? null : Number(ib.unit_no);
-    if (
-      wantUnit != null &&
-      (!Number.isInteger(wantUnit) || wantUnit < 1 || wantUnit > 99)
-    )
-      throw badRequest("unit_no must be 1..99");
-    if (trainNo || wantUnit != null) {
-      try {
-        if (wantUnit != null)
-          await pool.query(
-            `UPDATE nvr_unit SET train_no = COALESCE(NULLIF($3::text, ''), train_no), unit_no = $2::int WHERE id = $1 AND (unit_no IS DISTINCT FROM $2::int OR ($3::text <> '' AND train_no IS DISTINCT FROM $3::text))`,
-            [req.nvr.id, wantUnit, trainNo],
-          );
-        else
-          await pool.query(
-            `UPDATE nvr_unit SET train_no = $2::text, unit_no = NULL WHERE id = $1 AND train_no IS DISTINCT FROM $2::text`,
-            [req.nvr.id, trainNo],
-          ); // a different train: re-numbered below
-      } catch (e) {
-        if (e.code === "23505")
-          throw conflict(
-            `M-NVR number ${wantUnit} is already used in train ${trainNo || "this train"} by another unit - give each M-NVR of a train its own number`,
-          );
-        throw e;
-      }
-    }
+    // The unit also declares WHICH TRAIN it rides on (and its M-NVR number in it) over this same authenticated channel. Applied first: a bad camera list must not lose the identity.
+    await applyIdentity(req.nvr.id, req.body || {});
     const list = Array.isArray(req.body && req.body.cameras)
       ? req.body.cameras
       : null;
@@ -135,12 +270,19 @@ router.post(
       );
     let added = 0;
     let updated = 0;
+    const skipped = [];
+    const good = [];
     for (const c of list) {
-      const mid = Number(c.camera_id);
+      // One unusable entry must never hide the unit's other cameras (nor switch them off): it is skipped and reported, the rest is processed.
+      const mid = Number(c && c.camera_id);
       const name =
-        typeof c.name === "string" ? c.name.trim().slice(0, 120) : "";
-      if (!Number.isInteger(mid) || mid < 1 || mid > 999 || !name)
-        throw badRequest("every camera needs a camera_id (1..999) and a name");
+        (c && typeof c.name === "string" ? c.name.trim().slice(0, 120) : "") ||
+        (Number.isInteger(mid) ? `Camera ${mid}` : "");
+      if (!Number.isInteger(mid) || mid < 1 || mid > 999 || !name) {
+        skipped.push(c && c.camera_id != null ? c.camera_id : "?");
+        continue;
+      }
+      good.push(mid);
       const { rows } = await pool.query(
         `SELECT id, mnvr_camera_id FROM camera WHERE nvr_id = $1 AND (mnvr_camera_id = $2::int OR (mnvr_camera_id IS NULL AND lower(name) = lower($3::text))) ORDER BY (mnvr_camera_id = $2::int) DESC NULLS LAST LIMIT 1`,
         [req.nvr.id, mid, name],
@@ -161,7 +303,11 @@ router.post(
     }
     // The M-NVR is the source of truth: a CMS camera it no longer reports (left over from an old registration or a demo seed) is switched
     // off, so it is never asked for footage again. Its past footage stays (it is only deactivated, never deleted); reported cameras come back on.
-    const ids = list.map((c) => Number(c.camera_id));
+    if (!good.length)
+      throw badRequest(
+        `none of the ${list.length} cameras is usable (each needs a camera_id 1..999) - nothing was changed`,
+      );
+    const ids = good;
     const off = await pool.query(
       `UPDATE camera SET active = false WHERE nvr_id = $1 AND active AND NOT (COALESCE(mnvr_camera_id, -1) = ANY($2::int[]))`,
       [req.nvr.id, ids],
@@ -189,6 +335,7 @@ router.post(
       added,
       updated,
       deactivated: off.rowCount,
+      skipped,
       requests_added: requested,
       train_no: me[0].train_no,
       unit_no: me[0].unit_no,
@@ -216,8 +363,17 @@ router.post(
     }
     if (b.speed_mps != null && Number.isFinite(Number(b.speed_mps)))
       add("last_speed_mps", Number(b.speed_mps));
+    // the CMS learns the unit's network address by itself (shown in Fleet) - nothing to type in when registering
     if (b.health && typeof b.health === "object")
-      add("health", JSON.stringify(b.health), "::jsonb");
+      add(
+        "health",
+        JSON.stringify({ ...b.health, ip: clientIp(req) }),
+        "::jsonb",
+      );
+    else
+      sets.push(
+        `health = COALESCE(health, '{}'::jsonb) || jsonb_build_object('ip', $${params.push(clientIp(req))}::text)`,
+      );
     if (typeof b.firmware === "string")
       add("firmware", b.firmware.slice(0, 60));
     await pool.query(
@@ -256,8 +412,15 @@ router.post(
         console.warn(`gps insert for ${req.nvr.name}: ${e.message}`);
       }
     }
+    // A connected unit the CMS holds no active camera for (restored after a removal, a camera list that was refused ...) is asked to report its cameras again:
+    // it then shows up for footage requests within seconds instead of waiting for its next periodic refresh.
+    const { rows: ac } = await pool.query(
+      "SELECT EXISTS (SELECT 1 FROM camera WHERE nvr_id = $1 AND active) AS has",
+      [req.nvr.id],
+    );
     res.json({
       server_time: new Date().toISOString(),
+      resync_cameras: !ac[0].has || !!req.nvr.resync,
       commands: await waitingCommands(req.nvr.id, true),
     });
   }),
@@ -386,9 +549,13 @@ router.post(
     const missing = Array.isArray(req.body && req.body.missing)
       ? req.body.missing.slice(0, 50)
       : [];
+    const note =
+      req.body && typeof req.body.note === "string"
+        ? req.body.note.slice(0, 300)
+        : undefined; // why the unit found nothing / only part
     await pool.query(
       `UPDATE nvr_command SET status='done', completed_at=now(), result=$2 WHERE id=$1 AND status IN ('queued','sent','acked')`,
-      [c.id, JSON.stringify({ missing })],
+      [c.id, JSON.stringify({ missing, ...(note ? { note } : {}) })],
     );
     if (c.request_id)
       await reqs

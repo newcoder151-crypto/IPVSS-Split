@@ -226,14 +226,93 @@ async function uploadWindow(cmsCameraId, from, to, label, progress) {
       new Error(`CMS camera ${cmsCameraId} is not mapped to any M-NVR camera`),
       { permanent: true },
     );
+  await mnvr.calibrate().catch(() => {}); // the recorder's clock vs this PC's (usually identical)
   await waitForOpenSegment(mnvrCam, Math.min(to, Date.now()), label, progress);
   progress &&
     progress.set({
       status: "preparing",
       message: "finding the recorded segments",
     });
-  const segs = await mnvr.segmentsFor(mnvrCam, from, to);
+  let segs = await mnvr.segmentsFor(mnvrCam, from, to);
+  if (!segs.length) {
+    const before = mnvr.clockDelta();
+    if ((await mnvr.calibrate(true).catch(() => before)) !== before)
+      segs = await mnvr.segmentsFor(mnvrCam, from, to);
+  } // maybe only the clock was off
+  // files in the camera's folder that the M-NVR's database does not list yet (its indexer lags, stopped, or restarted)
+  const disk = await mnvr
+    .diskSegments(mnvrCam, from, Math.min(to, Date.now()))
+    .catch(() => ({ files: [], newest: null, dir: null }));
+  const known = new Set(segs.map((s) => s.file_path));
+  const extra = disk.files.filter((f) => !known.has(f.file_path));
+  for (const f of extra) {
+    try {
+      const g = await mnvr.gpsNear(f.start, 120);
+      if (g) {
+        f.gps_latitude = g.latitude;
+        f.gps_longitude = g.longitude;
+      }
+    } catch (_) {
+      /* no location */
+    }
+  }
+  segs = segs.concat(extra).sort((a, b) => a.start - b.start);
   const present = segs.filter((s) => fs.existsSync(s.file_path));
+  const absent = segs.filter((s) => !fs.existsSync(s.file_path));
+  // every time in a note is shown in Indian Standard Time (config.displayTzMin), whatever zone the PCs run in
+  const L = (t) =>
+    new Date(t + config.displayTzMin * 60000)
+      .toISOString()
+      .replace("T", " ")
+      .slice(0, 19) + (config.displayTzMin === 330 ? " IST" : "");
+  let note = null;
+  if (absent.length && !present.length)
+    throw Object.assign(
+      new Error(
+        `the M-NVR lists ${absent.length} recording(s) for this window, but their files are not on this PC (for example ${absent[0].file_path}) - is the recordings folder moved or on another drive?`,
+      ),
+      { permanent: true },
+    );
+  if (absent.length)
+    note = `${absent.length} of ${segs.length} recording file(s) for this window are missing on the M-NVR's disk`;
+  if (extra.length) {
+    note = `${extra.length} recording file(s) were in the recordings folder but not yet in the M-NVR's recording index - sent anyway${note ? `; ${note}` : ""}`;
+    log.warn(`${label}: ${note}`);
+  }
+  if (!segs.length) {
+    // say WHY there is nothing, so nobody has to guess
+    try {
+      const x = await mnvr.explain(mnvrCam, from, Math.min(to, Date.now()));
+      const other = x.inWindow.filter(
+        (w) => !["COMPLETED", "EXPORTED", "ARCHIVED"].includes(w.status),
+      );
+      if (!x.total)
+        note =
+          "the M-NVR has no recordings at all for this camera (is recording switched on for it?)";
+      else if (other.length)
+        note = `the M-NVR has ${other.map((w) => `${w.n} recording(s) marked ${w.status}`).join(", ")} in this window, but only finished (COMPLETED) recordings can be sent`;
+      else {
+        const gap =
+          x.prev && x.next
+            ? `there is no recording between ${L(x.prev)} and ${L(x.next)}`
+            : x.prev
+              ? `nothing was recorded after ${L(x.prev)}`
+              : x.next
+                ? `nothing was recorded before ${L(x.next)}`
+                : `its recordings are ${L(x.first)} to ${L(x.last)}`;
+        note = `no recording for this camera between ${L(from)} and ${L(Math.min(to, Date.now()))}: ${gap}. The M-NVR was not recording then (switched off, recorder stopped, or the camera offline)`;
+      }
+      if (!x.total || !other.length)
+        note += disk.newest
+          ? `. The newest file in its recordings folder starts ${L(disk.newest.start)} (${disk.newest.file_name})`
+          : disk.dir
+            ? `. Its recordings folder (${disk.dir}) holds no usable segment file`
+            : "";
+    } catch (_) {
+      note = "the M-NVR has no recording for this camera in that window";
+    }
+    log.warn(`${label}: ${note}`);
+  }
   const total = present.reduce((n, s) => {
     try {
       return n + fs.statSync(s.file_path).size;
@@ -267,7 +346,7 @@ async function uploadWindow(cmsCameraId, from, to, label, progress) {
   log.info(
     `${label}: ${present.length} segment(s) in window (${uploaded} sent, ${already} already at CMS)${missing.length ? `, ${missing.length} gap(s)` : ""}`,
   );
-  return { uploaded, already, missing };
+  return { uploaded, already, missing, note };
 }
 
 module.exports = { uploadWindow, uploadSegment, stats };

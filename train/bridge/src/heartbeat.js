@@ -85,6 +85,19 @@ async function healthBlock(info) {
 
 const st = require("./stage");
 const warned = new Set();
+let lastEnrol = 0;
+let lastResync = 0;
+// The CMS does not know this certificate (the unit was deleted there, or the CMS database was rebuilt): enrol again by itself, at most every 30 s.
+async function reEnrol() {
+  if (Date.now() - lastEnrol < 30000) return;
+  lastEnrol = Date.now();
+  try {
+    const r = await require("./autoProvision").ensureRegistered();
+    log.info(`enrolled again as '${r.name}'`);
+  } catch (err) {
+    log.warn(`could not enrol again: ${err.message}`);
+  }
+}
 // A failing read of the M-NVR's own database (GPS table, health tables ...) must never stop the heartbeat: it carries the upload commands.
 async function safe(label, fn, dflt) {
   try {
@@ -170,6 +183,11 @@ async function beat() {
     );
   commands.enqueue(res.commands);
   commands.reconcile(res.commands);
+  if (res.resync_cameras && hooks.resync && Date.now() - lastResync > 30000) {
+    lastResync = Date.now();
+    log.info("the CMS asked for this unit's cameras - reporting them");
+    hooks.resync();
+  }
   return more;
 }
 
@@ -184,11 +202,19 @@ async function loop(onlineChange) {
       status.online = false;
       status.last_error = e.message;
       const rejected = e.status === 401 || e.status === 403;
-      if (rejected)
-        st.error = `the CMS does not accept this unit's identity: ${e.message} - it is registered under another certificate/name (two M-NVRs with the same name?)`;
-      else if (st.error && st.error.startsWith("the CMS does not accept"))
+      if (e.status === 401 && /unknown NVR certificate/i.test(e.message)) {
+        await reEnrol();
+      } else if (e.status === 403 && /removed/i.test(e.message))
+        st.error = `this M-NVR was removed from the CMS fleet - to enrol it again: stop the bridge, delete ${require("path").join(config.stateDir, "identity.json")} and start it`;
+      else if (rejected)
+        st.error = `the CMS does not accept this unit's identity: ${e.message}`;
+      if (
+        !rejected &&
+        st.error &&
+        /^(the CMS does not accept|this M-NVR was removed)/.test(st.error)
+      )
         st.error = null;
-      if (rejected && !warned.has("rejected:" + e.message)) {
+      if (rejected && st.error && !warned.has("rejected:" + e.message)) {
         warned.add("rejected:" + e.message);
         log.error(st.error);
       } else if (!rejected && wasOnline !== false)
@@ -208,4 +234,5 @@ async function loop(onlineChange) {
   }
 }
 
-module.exports = { loop, status };
+const hooks = { resync: null }; // set by index.js: report the cameras to the CMS again
+module.exports = { loop, status, hooks };

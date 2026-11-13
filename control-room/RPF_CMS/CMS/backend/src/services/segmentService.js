@@ -2,7 +2,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const { pool, withTransaction } = require("../db");
 const { badRequest, notFound, conflict, HttpError } = require("../errors");
-const { absPath, ensureDir, sha256File } = require("./fsutil");
+const { absPath, ensureDir, exists, sha256File } = require("./fsutil");
 const { zoneAt } = require("./alertService");
 const naming = require("./naming");
 
@@ -352,6 +352,81 @@ async function coverage(cameraId, from, to) {
   };
 }
 
+/**
+ * Abandoned uploads. A segment is registered the moment a unit starts on it; if the request is cancelled / failed / never repeated, it stays
+ * 'pending' or 'partial' for ever and the console keeps showing it as "uploading". Anything idle for STALE_MIN minutes with no open command for
+ * its camera is settled here: a file that is in fact all there (size + SHA-256 match) is marked complete, the rest is marked failed (the next
+ * request for that footage re-sends it from scratch - registerSegment resets a failed segment).
+ */
+async function sweepStale(staleMin = 30) {
+  const { rows } = await pool.query(
+    `SELECT s.id, s.nvr_id, s.camera_id, s.start_time, s.end_time, s.object_key, s.size_bytes, s.sha256
+       FROM video_segment s
+      WHERE s.upload_status IN ('pending','partial')
+        AND NOT EXISTS (SELECT 1 FROM upload_session u WHERE u.segment_id = s.id AND u.updated_at > now() - make_interval(mins => $1))
+        AND NOT EXISTS (SELECT 1 FROM nvr_command m WHERE m.nvr_id = s.nvr_id AND m.camera_id = s.camera_id AND m.status IN ('queued','sent','acked'))
+      ORDER BY s.id LIMIT 500`,
+    [staleMin],
+  );
+  let completed = 0;
+  let failed = 0;
+  for (const s of rows) {
+    const final = absPath(s.object_key);
+    const part = absPath(`${s.object_key}.part`);
+    let done = false;
+    try {
+      if (
+        exists(final) &&
+        fs.statSync(final).size === Number(s.size_bytes) &&
+        (await sha256File(final)) === s.sha256
+      ) {
+        const r = await pool.query(
+          `UPDATE video_segment SET upload_status = 'complete', uploaded_at = COALESCE(uploaded_at, now()) WHERE id = $1 AND upload_status IN ('pending','partial')`,
+          [s.id],
+        );
+        await pool.query(
+          `UPDATE upload_session SET bytes_received = total_bytes, updated_at = now() WHERE segment_id = $1`,
+          [s.id],
+        );
+        done = r.rowCount > 0;
+      } else if (
+        exists(part) &&
+        fs.statSync(part).size === Number(s.size_bytes)
+      ) {
+        // every byte arrived, only the closing step never ran
+        await completeSegment({ id: s.nvr_id }, s.id);
+        done = true;
+      }
+    } catch (_) {
+      /* damaged or locked: settle it as failed below */
+    }
+    if (done) {
+      completed++;
+      continue;
+    }
+    await pool.query(
+      `UPDATE video_segment SET upload_status = 'failed' WHERE id = $1 AND upload_status IN ('pending','partial')`,
+      [s.id],
+    );
+    await pool.query(
+      `UPDATE upload_session SET bytes_received = 0, last_chunk_index = -1, updated_at = now() WHERE segment_id = $1`,
+      [s.id],
+    );
+    try {
+      fs.rmSync(part, { force: true });
+    } catch (_) {
+      /* ignore */
+    }
+    failed++;
+  }
+  if (completed)
+    for (const s of rows)
+      require("./requestService")
+        .onSegmentComplete(s.camera_id, s.start_time, s.end_time)
+        .catch(() => {});
+  return `${rows.length} abandoned upload(s) settled: ${completed} complete on disk, ${failed} marked failed (re-sent by the next request)`;
+}
+
 module.exports = {
   registerSegment,
   uploadChunk,
@@ -360,4 +435,5 @@ module.exports = {
   keyFor,
   loadOwned,
   identityOf,
+  sweepStale,
 };

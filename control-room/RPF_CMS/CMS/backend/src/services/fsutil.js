@@ -79,10 +79,10 @@ function unwritable(root, limit = 20000) {
     let ents;
     try {
       ents = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (_) {
-      bad.push(dir);
+    } catch (e) {
+      if (e.code !== "ENOENT") bad.push(dir);
       return;
-    }
+    } // a folder that does not exist yet is simply created when needed
     for (const e of ents) {
       if (++seen > limit) return;
       const p = path.join(dir, e.name);
@@ -128,9 +128,7 @@ function storeStatus(maxAgeMs = 20000) {
     const probe = path.join(root, `.write-test-${process.pid}`);
     fs.writeFileSync(probe, "x");
     fs.rmSync(probe, { force: true });
-    const bad = unwritable(path.join(root, "segments")).concat(
-      unwritable(path.join(root, "delivered")),
-    );
+    const bad = unwritable(root);
     if (bad.length) {
       out.ok = false;
       out.error = `footage store: ${bad.length} folder(s)/file(s) are not writable by '${whoami()}', e.g. ${path.relative(root, bad[0])}. Fix on the control-room PC:  sudo chown -R ${whoami()} ${root}`;
