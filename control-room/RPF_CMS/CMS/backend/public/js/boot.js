@@ -3,12 +3,12 @@
   'use strict';
   const C = window.C; const { h, S, api } = C;
 
-  const NAV_ICON = { dashboard: 'gauge', queue: 'bell', alerts: 'alert', incidents: 'folder', map: 'map', requests: 'upload', footage: 'film', evidence: 'flag', fleet: 'train', segments: 'db', registry: 'pin', users: 'users', retention: 'clock', settings: 'cog', jobs: 'activity', audit: 'clip', lab: 'flask' };
+  const NAV_ICON = { dashboard: 'gauge', queue: 'bell', alerts: 'alert', incidents: 'folder', map: 'map', requests: 'upload', footage: 'film', evidence: 'flag', fleet: 'train', segments: 'db', registry: 'pin', users: 'users', retention: 'clock', settings: 'cog', notify: 'bell', jobs: 'activity', audit: 'clip', lab: 'flask' };
   const NAV = [
     ['Operations', [['dashboard', 'Control room'], ['queue', 'Alert queue', 'queue'], ['alerts', 'Alerts', 'unacked'], ['incidents', 'Incidents'], ['map', 'Live map']]],
     ['Footage', [['requests', 'Footage requests', 'decide'], ['footage', 'Delivered footage'], ['evidence', 'Evidence', 'archive_failed']]],
     ['Fleet', [['fleet', 'M-NVR fleet'], ['segments', 'Stored segments']]],
-    ['Administration', [['registry', 'Zones & posts'], ['users', 'Users', null, 'admin'], ['settings', 'Settings', null, 'admin'], ['audit', 'Audit trail']]],
+    ['Administration', [['registry', 'Zones & posts'], ['users', 'Users', null, 'admin'], ['settings', 'Settings', null, 'admin'], ['notify', 'E-mail & SMS', null, 'admin'], ['audit', 'Audit trail']]],
   ];
   const visible = ([id, , , need]) => !need || (need === 'dev' ? !!(S.me && S.me.dev_tools) : C.isAdmin());
   const allViews = () => NAV.flatMap(([, items]) => items.filter(visible).map((i) => i[0]));

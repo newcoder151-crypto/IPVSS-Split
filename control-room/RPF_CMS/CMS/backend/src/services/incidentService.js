@@ -54,7 +54,7 @@ async function dispatchAlert({ alertId, postId, user, mode = 'operator', inciden
       details: { post_id: postId, delivery_id: delivery.id, incident_id: inc && inc.id, mode },
     });
     await notify.send(client, {
-      zone_id: a.zone_id, post_id: postId, kind: 'alert', ref_entity: 'alert_delivery', ref_id: delivery.id,
+      zone_id: a.zone_id, post_id: postId, kind: 'alert', priority: a.priority, ref_entity: 'alert_delivery', ref_id: delivery.id,
       title: `${a.alert_type.replace(/_/g, ' ')} - priority ${a.priority}${incident ? ' (incident raised)' : ''}`,
       body: mode === 'escalation' ? 'Escalated: the previous post did not acknowledge in time.' : mode === 'auto' && !incident ? 'Lower priority: delivered automatically. Raise an incident if it needs action.' : mode === 'operator' && !incident ? 'Forwarded by CMS operator - review and raise an incident if needed.' : null,
     });

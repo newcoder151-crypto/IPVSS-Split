@@ -85,6 +85,37 @@ const SCHEMA = {
     type: "bool",
     label: "Run the retention job automatically every hour",
   },
+  notify_email_enabled: {
+    type: "bool",
+    label:
+      "E-mail: send notifications to each post's alert e-mail (provider and login are in config/notify.conf)",
+  },
+  notify_sms_enabled: {
+    type: "bool",
+    label: "SMS: send notifications to each post's alert mobile number",
+  },
+  notify_kinds: {
+    type: "text",
+    label:
+      "Which notifications also go out by e-mail / SMS (comma list of: alert, incident, request, footage, evidence)",
+  },
+  notify_sms_min_priority: {
+    type: "int",
+    min: 1,
+    max: 10,
+    label:
+      "SMS only for alerts of this priority or higher (lower ones are still e-mailed)",
+  },
+  notify_extra_emails: {
+    type: "text",
+    label:
+      "Control-room e-mail addresses that receive EVERY outgoing notification (comma separated, optional)",
+  },
+  notify_extra_phones: {
+    type: "text",
+    label:
+      "Control-room mobile numbers that receive EVERY outgoing SMS (comma separated, optional)",
+  },
   notify_webhook_url: {
     type: "text",
     label:

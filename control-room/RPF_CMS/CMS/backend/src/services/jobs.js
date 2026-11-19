@@ -31,6 +31,12 @@ const JOBS = [
     label: "Alerts: escalate unacknowledged deliveries",
   },
   {
+    name: "notify_outbox",
+    every: 10,
+    fn: () => require("./outbound").processQueue(),
+    label: "Alerts: send e-mail / SMS (retries while the network or gateway is down)",
+  },
+  {
     name: "retention",
     every: 3600,
     fn: () => require("./retentionService").runIfEnabled(),

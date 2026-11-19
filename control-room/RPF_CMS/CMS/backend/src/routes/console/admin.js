@@ -10,6 +10,12 @@ const {
 } = require("../../middleware/auth");
 const settings = require("../../services/settings");
 const jobs = require("../../services/jobs");
+const outbound = require("../../services/outbound");
+const providerConfig = require("../../services/providerConfig");
+const config = require("../../config");
+const fs = require("fs");
+const emailChannel = require("../../services/channels/emailChannel");
+const smsChannel = require("../../services/channels/smsChannel");
 const { audit } = require("../../services/audit");
 const {
   parseId,
@@ -74,7 +80,7 @@ router.get(
     const w = where();
     w.raw(zoneScope(req.user, "p.zone_id", w.params, req.query.zone_id));
     const { rows } = await pool.query(
-      `SELECT p.id, p.name, p.zone_id, z.name AS zone_name, p.active, ST_Y(p.location::geometry) AS lat, ST_X(p.location::geometry) AS lon,
+      `SELECT p.id, p.name, p.zone_id, z.name AS zone_name, p.active, p.alert_email, p.alert_phone, ST_Y(p.location::geometry) AS lat, ST_X(p.location::geometry) AS lon,
             (SELECT COUNT(*) FROM users u WHERE u.post_id = p.id AND u.status = 'active') AS officers,
             (SELECT COUNT(*) FROM alert_delivery d JOIN alert a ON a.id = d.alert_id AND a.event_time = d.alert_event_time WHERE d.post_id = p.id AND d.ack_at IS NULL AND a.status IN ('routed','escalated')) AS unacked
        FROM rpf_post p JOIN zone z ON z.id = p.zone_id ${w.sql()} ORDER BY z.name, p.name`,
@@ -83,6 +89,20 @@ router.get(
     res.json(rows);
   }),
 );
+/** Alert contacts of a post: '' clears the field; anything else must be a valid address / mobile number (stored as +<country code><number>). */
+function parseContactEmail(v) {
+  const s = typeof v === "string" ? v.trim() : "";
+  if (!s) return null;
+  if (!emailChannel.isEmail(s)) throw badRequest("alert e-mail is not a valid e-mail address");
+  return s.toLowerCase().slice(0, 200);
+}
+function parseContactPhone(v) {
+  const s = typeof v === "string" ? v.trim() : "";
+  if (!s) return null;
+  const n = smsChannel.normalizePhone(s);
+  if (!n) throw badRequest("alert mobile number is not valid (write it as +<country code><number>, e.g. +919876543210)");
+  return "+" + n;
+}
 function parseLatLon(b) {
   return {
     lat: num(b.lat, "lat", { min: -90, max: 90 }),
@@ -100,8 +120,8 @@ router.post(
         : req.user.zone_id;
     const { lat, lon } = parseLatLon(b);
     const { rows } = await pool.query(
-      `INSERT INTO rpf_post (zone_id, name, location) VALUES ($1,$2,ST_SetSRID(ST_MakePoint($3,$4),4326)::geography) RETURNING id`,
-      [zoneId, requireText(b.name, "name", 80), lon, lat],
+      `INSERT INTO rpf_post (zone_id, name, location, alert_email, alert_phone) VALUES ($1,$2,ST_SetSRID(ST_MakePoint($3,$4),4326)::geography,$5,$6) RETURNING id`,
+      [zoneId, requireText(b.name, "name", 80), lon, lat, parseContactEmail(b.alert_email), parseContactPhone(b.alert_phone)],
     );
     await audit(null, {
       user: req.user,
@@ -134,6 +154,8 @@ router.patch(
     };
     if (b.name != null) add("name = ?", requireText(b.name, "name", 80));
     if (b.active != null) add("active = ?", !!b.active);
+    if (b.alert_email !== undefined) add("alert_email = ?", parseContactEmail(b.alert_email));
+    if (b.alert_phone !== undefined) add("alert_phone = ?", parseContactPhone(b.alert_phone));
     if (b.lat != null || b.lon != null) {
       const { lat, lon } = parseLatLon(b);
       params.push(lon, lat);
@@ -670,6 +692,92 @@ router.put(
       details: changes,
     });
     res.json({ ok: true, changes });
+  }),
+);
+
+// E-mail / SMS: what is configured (never the keys), the delivery log, and a test button. Super admin only (recipients are personal data).
+router.get(
+  "/notify/status",
+  requireSuper,
+  wrap(async (req, res) => {
+    res.json(await outbound.status());
+  }),
+);
+router.post(
+  "/notify/test",
+  requireSuper,
+  wrap(async (req, res) => {
+    const b = req.body || {};
+    const channel = String(b.channel || "");
+    let r;
+    try {
+      r = await outbound.testSend(channel, String(b.to || "").trim());
+    } catch (e) {
+      throw badRequest(e.message);
+    }
+    await audit(null, { user: req.user, action: "notify.test", entity: "notification", details: { channel } });
+    res.json({ ok: true, ref: r.ref || null });
+  }),
+);
+
+/** Presets of the provider forms live in config/notify-presets.json (start.sh passes its path in NOTIFY_PRESETS_FILE): no provider names or hosts in code. */
+function readPresets() {
+  try {
+    const j = JSON.parse(fs.readFileSync(process.env.NOTIFY_PRESETS_FILE, "utf8"));
+    return { email: j.email || [], sms: j.sms || [] };
+  } catch (_) {
+    return { email: [], sms: [] };
+  }
+}
+// The "E-mail & SMS" page: readiness + every post's contacts (zone admins: their own zone), control-room copies (super admin only)
+router.get(
+  "/notify/overview",
+  requireAdmin,
+  wrap(async (req, res) => {
+    const w = where();
+    w.raw(zoneScope(req.user, "p.zone_id", w.params, req.query.zone_id));
+    const { rows } = await pool.query(
+      `SELECT p.id, p.name, p.zone_id, z.name AS zone_name, p.active, p.alert_email, p.alert_phone
+         FROM rpf_post p JOIN zone z ON z.id = p.zone_id ${w.sql()} ORDER BY z.name, p.name`,
+      w.params,
+    );
+    res.json({ ...(await outbound.overview(rows, req.user.role === "super_admin")), posts: rows });
+  }),
+);
+router.get(
+  "/notify/config",
+  requireSuper,
+  wrap(async (req, res) => {
+    await providerConfig.fresh(true);
+    res.json({
+      fields: providerConfig.view(),
+      presets: readPresets(),
+      gateways: { fast2sms: config.outbound.sms.fast2sms.url, twilio: config.outbound.sms.twilio.url },
+    });
+  }),
+);
+router.put(
+  "/notify/config",
+  requireSuper,
+  wrap(async (req, res) => {
+    const b = req.body || {};
+    let changed;
+    try {
+      changed = await providerConfig.save(b.values, b.clear, req.user.id);
+    } catch (e) {
+      throw badRequest(e.message);
+    }
+    await audit(null, { user: req.user, action: "notify.config", entity: "notify_provider_config", details: { keys: changed } }); // key names only, never values
+    res.json({ ok: true, fields: providerConfig.view() });
+  }),
+);
+router.post(
+  "/notify/retry",
+  requireSuper,
+  wrap(async (req, res) => {
+    const n = await outbound.retryFailed();
+    await audit(null, { user: req.user, action: "notify.retry", entity: "notification_delivery", details: { requeued: n } });
+    res.json({ ok: true, requeued: n });
   }),
 );
 

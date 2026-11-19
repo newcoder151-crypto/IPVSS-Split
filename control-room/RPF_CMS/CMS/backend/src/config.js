@@ -7,6 +7,9 @@ const int = (name, dflt) => {
   return Number.isFinite(v) && v > 0 ? v : dflt;
 };
 
+const str = (name) => String(process.env[name] || "").trim();
+const flag = (name) => ["1", "true", "yes", "on"].includes(str(name).toLowerCase());
+
 let jwtSecret = process.env.CMS_JWT_SECRET || process.env.JWT_SECRET || "";
 let ephemeralSecret = false;
 if (jwtSecret.length < 32) {
@@ -56,6 +59,50 @@ module.exports = {
     reenrol_removed_nvr: process.env.NVR_RESTORE_REMOVED !== "0", // a removed M-NVR that is still running comes back by itself (e.g. deleted by mistake)
     retention_auto: process.env.RETENTION_AUTO !== "0",
     notify_webhook_url: process.env.NOTIFY_WEBHOOK_URL || "",
+    // E-mail / SMS for alerts (provider + keys: config/notify.conf -> environment; these are only the on/off switches and the rules)
+    notify_email_enabled: flag("NOTIFY_EMAIL_ENABLED"),
+    notify_sms_enabled: flag("NOTIFY_SMS_ENABLED"),
+    notify_kinds: str("NOTIFY_KINDS") || "alert,incident", // which notifications also go out by e-mail / SMS
+    notify_sms_min_priority: int("NOTIFY_SMS_MIN_PRIORITY", 1), // alerts below this priority are e-mailed but not texted
+    notify_extra_emails: str("NOTIFY_EXTRA_EMAILS"), // control-room addresses that receive every outgoing notification
+    notify_extra_phones: str("NOTIFY_EXTRA_PHONES"),
+  },
+  // Outgoing channels. Nothing is defaulted here (no hosts, ports, URLs or keys): they all come from config/notify.conf.
+  outbound: {
+    email: {
+      provider: str("EMAIL_PROVIDER").toLowerCase(), // smtp | none
+      host: str("SMTP_HOST"),
+      port: Number(str("SMTP_PORT")) || undefined,
+      secure: str("SMTP_SECURE").toLowerCase() || "starttls", // starttls | ssl | none
+      user: str("SMTP_USER"),
+      password: process.env.SMTP_PASSWORD || "",
+      from: str("EMAIL_FROM"),
+    },
+    sms: {
+      provider: str("SMS_PROVIDER").toLowerCase(), // fast2sms | twilio | none
+      defaultCountryCode: str("SMS_DEFAULT_COUNTRY_CODE").replace(/\D/g, ""),
+      maxChars: int("SMS_MAX_CHARS", 300),
+      fast2sms: {
+        url: str("FAST2SMS_API_URL"),
+        key: process.env.FAST2SMS_API_KEY || "",
+        route: str("FAST2SMS_ROUTE") || "q", // q = Quick SMS (no DLT), dlt = your approved DLT template
+        senderId: str("FAST2SMS_SENDER_ID"),
+        templateId: str("FAST2SMS_DLT_TEMPLATE_ID"),
+      },
+      twilio: {
+        url: str("TWILIO_API_URL"),
+        sid: str("TWILIO_ACCOUNT_SID"),
+        token: process.env.TWILIO_AUTH_TOKEN || "",
+        from: str("TWILIO_FROM"),
+        messagingServiceSid: str("TWILIO_MESSAGING_SERVICE_SID"),
+      },
+    },
+    timeoutS: int("NOTIFY_TIMEOUT_S", 15),
+    retryMax: int("NOTIFY_RETRY_MAX", 6), // attempts per message (network trouble / gateway busy)
+    retryBaseS: int("NOTIFY_RETRY_BASE_S", 20), // wait before the 2nd attempt; doubles each time (max 15 min)
+    maxAgeMin: int("NOTIFY_MAX_AGE_MIN", 120), // a message older than this is dropped, not sent late (an alert from hours ago would mislead)
+    logDays: int("NOTIFY_LOG_DAYS", 90), // keep the delivery log this long
+    linkBase: str("NOTIFY_RPF_URL"), // optional: shown at the end of e-mails ("open the RPF dashboard"); start.sh fills it in
   },
   // Optional shared secret a new M-NVR must present (header X-Enroll-Key) to enrol itself. Empty = any unit that can reach the CMS may enrol.
   nvrEnrollKey: process.env.NVR_ENROLL_KEY || "",

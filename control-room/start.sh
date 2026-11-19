@@ -15,6 +15,8 @@
 #   HTTP        http://<this-pc>:<CMS_PORT>/nvr/v1    heartbeat, GPS, alerts, footage upload   (CMS)
 #   PostgreSQL  <this-pc>:<DB_PORT>              its one-time self-registration rows      (database "cms")
 # Needs: Linux with Node 18+, PostgreSQL 15+ with PostGIS, ffmpeg, psql, curl (installed for you if sudo allows).
+# OFFLINE: with the offline/ folder next to this script (see README-OFFLINE.md) nothing is downloaded: Node.js + npm and the npm packages
+#          are bundled, and the Ubuntu packages are installed from offline/apt-repo on the first start.
 # =============================================================================
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,6 +35,29 @@ CFG_LOOPBACK_HOST="$(cfg_need LOOPBACK_HOST)"; CFG_DB_HOST="$(cfg_need DB_HOST)"
 CFG_DB_NAME="$(cfg_need DB_NAME)"; CFG_DB_USER="$(cfg_need DB_USER)"; CFG_DB_ADMIN_USER="$(cfg_need DB_ADMIN_USER)"
 CFG_CMS_PORT="$(cfg_need CMS_PORT)"; CFG_RPF_PORT="$(cfg_need RPF_PORT)"; CFG_LOCAL_HOSTS="$(cfg_need LOCAL_HOST_NAMES)"
 CFG_PREFERRED_PREFIX="${PREFERRED_NETWORK_PREFIX:-$(cfg PREFERRED_NETWORK_PREFIX)}"; CFG_SKIP_PREFIXES="${SKIP_NETWORK_PREFIXES:-$(cfg SKIP_NETWORK_PREFIXES)}"
+
+# ---- offline bundle (config/control-room.conf: OFFLINE_*): Node.js + npm, npm packages and the Ubuntu .deb files travel with this folder ----
+CFG_OFFLINE_NAME="${OFFLINE_DIR:-$(cfg OFFLINE_DIR)}"; OFFLINE_PATH="$ROOT/${CFG_OFFLINE_NAME:-offline}"
+CFG_OFFLINE_NODE="${OFFLINE_USE_BUNDLED_NODE:-$(cfg OFFLINE_USE_BUNDLED_NODE)}"; CFG_OFFLINE_NODE="${CFG_OFFLINE_NODE:-auto}"
+CFG_OFFLINE_PKGS="${OFFLINE_INSTALL_PACKAGES:-$(cfg OFFLINE_INSTALL_PACKAGES)}"; CFG_OFFLINE_PKGS="${CFG_OFFLINE_PKGS:-auto}"
+# Node.js + npm from the bundle go first on PATH (also for every process start.sh launches), so this PC needs no Node installed.
+use_bundled_node() {
+  local nb="$OFFLINE_PATH/runtime/node/bin"
+  [[ "$CFG_OFFLINE_NODE" == "no" ]] && return 0
+  [[ -x "$nb/node" ]] || return 0
+  case ":$PATH:" in *":$nb:"*) ;; *) export PATH="$nb:$PATH";; esac
+}
+use_bundled_node
+offline_bundle_present() { [[ "$CFG_OFFLINE_PKGS" != "no" && -f "$OFFLINE_PATH/install-offline.sh" && -s "$OFFLINE_PATH/apt-repo/Packages.gz" ]]; }
+pg_server_ok() { compgen -G "/usr/lib/postgresql/*/bin/postgres" >/dev/null; }
+postgis_ok()   { compgen -G "/usr/share/postgresql/*/extension/postgis.control" >/dev/null; }
+# install the system packages from OFFLINE_DIR/apt-repo (no internet). Needs root: uses sudo (may ask for your password here).
+offline_install() {
+  offline_bundle_present || return 1
+  say "installing system packages from the offline bundle (no internet needed)"
+  if [[ $EUID -eq 0 ]]; then bash "$OFFLINE_PATH/install-offline.sh"; else command -v sudo >/dev/null || { warn "sudo not found - run as root:  bash $OFFLINE_PATH/install-offline.sh"; return 1; }; sudo bash "$OFFLINE_PATH/install-offline.sh"; fi
+  local rc=$?; hash -r; return $rc
+}
 
 
 # ---- this PC's address, as shown in the messages and shown in the messages ------------------------------------------------
@@ -84,32 +109,61 @@ do_reset_passwords() {
 # ---- system tools -------------------------------------------------------------------------------------------------------
 SUDO=""; [[ $EUID -ne 0 ]] && command -v sudo >/dev/null && sudo -n true 2>/dev/null && SUDO="sudo"
 ensure_system() {
-  local missing=() c
+  local missing=() c want_pg=0
   for c in node npm psql curl ffmpeg python3; do command -v "$c" >/dev/null || missing+=("$c"); done
-  [[ ${#missing[@]} -eq 0 ]] && return 0
+  # with the offline bundle the PostgreSQL SERVER and PostGIS are installed too (not only the psql client)
+  if offline_bundle_present && { ! pg_server_ok || ! postgis_ok; }; then want_pg=1; fi
+  [[ ${#missing[@]} -eq 0 && $want_pg -eq 0 ]] && return 0
   local pk=(); for c in "${missing[@]}"; do case "$c" in node|npm) pk+=(nodejs npm);; psql) pk+=(postgresql-client);; python3) pk+=(python3 python3-pip python3-venv);; *) pk+=("$c");; esac; done
-  if command -v apt-get >/dev/null && { [[ $EUID -eq 0 ]] || [[ -n "$SUDO" ]]; }; then
+  if offline_bundle_present; then
+    offline_install || warn "the offline installation did not finish - see the messages above"
+  elif command -v apt-get >/dev/null && { [[ $EUID -eq 0 ]] || [[ -n "$SUDO" ]]; }; then
     say "installing missing tools: ${missing[*]}"; $SUDO apt-get update -qq >/dev/null 2>&1; $SUDO apt-get install -y -qq "${pk[@]}" >/dev/null 2>&1 || true
   fi
-  for c in "${missing[@]}"; do command -v "$c" >/dev/null || die "$c is not installed. Run:  sudo apt install -y ${pk[*]}   (then run start.sh again)"; done
+  missing=(); for c in node npm psql curl ffmpeg python3; do command -v "$c" >/dev/null || missing+=("$c"); done
+  for c in "${missing[@]}"; do
+    if offline_bundle_present; then die "$c is not installed. Run:  sudo bash $OFFLINE_PATH/install-offline.sh   (then run start.sh again)"
+    else die "$c is not installed. Run:  sudo apt install -y ${pk[*]}   (then run start.sh again)"; fi
+  done
 }
 ensure_postgres() {
   if command -v pg_isready >/dev/null && pg_isready -q -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" 2>/dev/null; then return 0; fi
   say "starting PostgreSQL"
   { $SUDO systemctl start postgresql || $SUDO service postgresql start; } >/dev/null 2>&1 || true
   for _ in 1 2 3 4 5 6 7 8; do pg_isready -q -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" 2>/dev/null && return 0; sleep 1; done
-  warn "PostgreSQL is not answering on $CFG_DB_HOST:$CFG_DB_PORT - install/start it (sudo apt install postgresql postgis) and run start.sh again"
+  warn "PostgreSQL is not answering on $CFG_DB_HOST:$CFG_DB_PORT - install/start it ($(offline_bundle_present && echo "sudo bash $OFFLINE_PATH/install-offline.sh" || echo "sudo apt install postgresql postgis")) and run start.sh again"
 }
 
 # ---- npm packages: install whatever is missing (the individual launchers only install when node_modules is absent) -------
 ensure_npm() {
   local d="$1"; [[ -f "$d/package.json" ]] || return 0
   if [[ ! -d "$d/node_modules" ]] || ! (cd "$d" && npm ls --depth=0 >/dev/null 2>&1); then
+    local na=(--no-audit --no-fund --silent)
+    [[ -d "$OFFLINE_PATH/npm-cache" ]] && na+=(--offline --cache "$OFFLINE_PATH/npm-cache")     # offline bundle: packages come from its cache
     say "installing packages: ${d#$ROOT/}"
-    (cd "$d" && npm install --no-audit --no-fund --silent) >> "$LOGS/npm-install.log" 2>&1 || { tail -n 15 "$LOGS/npm-install.log" >&2; die "npm install failed in ${d#$ROOT/}"; }
+    (cd "$d" && npm install "${na[@]}") >> "$LOGS/npm-install.log" 2>&1 || { tail -n 15 "$LOGS/npm-install.log" >&2; die "npm install failed in ${d#$ROOT/}"; }
   fi
 }
 
+
+# ---- e-mail + SMS settings (config/notify.conf): read into the environment of CMS. Only the known prefixes are taken, a value already set in
+#      the environment wins (e.g.  SMTP_PASSWORD=... bash start.sh), and the file is never executed.
+load_notify_conf() {
+  local f="$ROOT/config/notify.conf" line k v
+  [[ -r "$f" ]] || return 0
+  chmod 600 "$f" 2>/dev/null || true       # it holds passwords and API keys
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*([A-Z][A-Z0-9_]*)=(.*)$ ]] || continue
+    k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+    case "$k" in EMAIL_*|SMTP_*|SMS_*|FAST2SMS_*|TWILIO_*|NOTIFY_*) ;; *) continue;; esac
+    v="${v%$'\r'}"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+    if [[ "$v" == \"*\" || "$v" == \'*\' ]]; then v="${v:1:${#v}-2}"; fi
+    [[ -z "${!k+x}" ]] && export "$k=$v"
+  done < "$f"
+  [[ -z "${NOTIFY_PRESETS_FILE:-}" && -r "$ROOT/config/notify-presets.json" ]] && export NOTIFY_PRESETS_FILE="$ROOT/config/notify-presets.json"   # provider presets of the console page
+  if [[ -z "${NOTIFY_RPF_URL:-}" ]]; then local ip; ip="$(my_ip)"; [[ -n "$ip" ]] && export NOTIFY_RPF_URL="http://$ip:$CFG_RPF_PORT"; fi
+  return 0
+}
 
 # ---- files left over from older versions of CMS / RPF (they would confuse or break the current ones) ---------------------------
 remove_obsolete() {
@@ -376,6 +430,7 @@ do_start() {
   for d in "$RPFD" "$CMSD/backend"; do ensure_npm "$d"; done
 
 
+  load_notify_conf
   # 1. control room: database, CMS, RPF
   # a CMS left running from an earlier start may use a different footage folder than RPF: always start both fresh,
   # so they share one MEDIA_ROOT (rpf/media)

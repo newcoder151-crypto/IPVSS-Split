@@ -919,6 +919,20 @@
             step: "any",
             value: p ? p.lon : "",
           },
+          {
+            name: "alert_email",
+            label: "Alert e-mail (optional)",
+            type: "email",
+            value: p && p.alert_email ? p.alert_email : "",
+            hint: "Alerts, incidents and other notices for this post are also e-mailed here (needs e-mail turned on under Settings).",
+          },
+          {
+            name: "alert_phone",
+            label: "Alert mobile (optional)",
+            type: "tel",
+            value: p && p.alert_phone ? p.alert_phone : "",
+            hint: "SMS goes to this number. Write it with the country code, e.g. +919876543210 (a 10-digit Indian number also works).",
+          },
           ...(p
             ? [
                 {
@@ -996,6 +1010,7 @@
           "Post",
           "Zone",
           "Location",
+          "Alert contacts",
           "Officers",
           "Unacked alerts",
           "Active",
@@ -1008,6 +1023,13 @@
             h("td", {}, h("b", {}, p.name)),
             h("td", {}, p.zone_name),
             h("td", {}, C.mapLink(p.lat, p.lon)),
+            h(
+              "td",
+              { class: "muted" },
+              p.alert_email || p.alert_phone
+                ? [p.alert_email, p.alert_email && p.alert_phone ? h("br") : null, p.alert_phone]
+                : "-",
+            ),
             h("td", {}, p.officers),
             h("td", {}, +p.unacked ? badge(p.unacked, "red") : "0"),
             h(
@@ -1197,7 +1219,7 @@
     );
 
   V.settings = async () => {
-    const rows = await api("/settings");
+    const rows = (await api("/settings")).filter((r) => !/^notify_(email_enabled|sms_enabled|kinds|sms_min_priority|extra_)/.test(r.key)); // these live on the E-mail & SMS page
     const canEdit = C.isSuper();
     const inputs = {};
     const form = h(
@@ -1259,7 +1281,195 @@
         toast(ex.message);
       }
     });
-    return h("div", {}, head("Settings"), form);
+    const pointer = h(
+      "div",
+      { class: "card pad" },
+      "E-mail and SMS alerts (providers, who receives what, rules, delivery log) have their own page: ",
+      h("a", { href: "#", onclick: (e) => { e.preventDefault(); C.go("notify"); } }, "Administration > E-mail & SMS"),
+      ".",
+    );
+    return h("div", {}, head("Settings"), form, pointer);
+  };
+
+  // =========================================================================================
+  // E-mail & SMS: connect a provider, say who receives what, rules, delivery log
+  // =========================================================================================
+  V.notify = async () => {
+    const isSuper = C.isSuper();
+    const [ov, cfg, st, ruleRows] = await Promise.all([
+      api("/notify/overview"),
+      isSuper ? api("/notify/config") : null,
+      isSuper ? api("/notify/status") : null,
+      api("/settings"),
+    ]);
+    const R = Object.fromEntries(ruleRows.map((r) => [r.key, r.value]));
+    const F = cfg ? Object.fromEntries(cfg.fields.map((f) => [f.key, f])) : {};
+    const card = (title, ...kids) => h("div", { class: "card pad settings" }, h("h3", {}, title), kids);
+    const row = (label, el, hint) => h("div", { class: "srow" }, h("label", {}, label), h("div", {}, el, hint ? h("div", { class: "hint" }, hint) : null));
+
+    // ---- 0. how it works + what is still missing ----------------------------------------
+    const withMail = ov.posts.filter((p) => p.alert_email).length;
+    const withPhone = ov.posts.filter((p) => p.alert_phone).length;
+    const chk = (ok, text, warn) => h("div", {}, ok ? badge("done", "green") : badge("to do", warn || "red"), " ", text);
+    const how = card(
+      "How alerts reach people",
+      h("p", {}, "When the CMS sends an alert or an incident to an RPF post, the officers see it in the RPF dashboard as before. With this page the same message is ALSO e-mailed to that post's alert e-mail and texted to that post's alert mobile number. If an alert is escalated to another post, that post's contacts are used. People you list under 'Control-room copies' receive every message."),
+      h("p", { class: "hint" }, "Three steps. Each line below turns green when it is done."),
+      chk(ov.email.configured || ov.sms.configured, isSuper ? "1. Connect an e-mail and/or SMS provider" : "1. A provider is connected (super admin does this)"),
+      chk(withMail + withPhone > 0, `2. Fill each post's alert e-mail / mobile (${withMail} of ${ov.posts.length} posts have an e-mail, ${withPhone} have a mobile number)`),
+      chk(ov.email.enabled || ov.sms.enabled, `3. Switch the channels on (e-mail: ${ov.email.enabled ? "on" : "off"}, SMS: ${ov.sms.enabled ? "on" : "off"})`),
+    );
+
+    // ---- 1. providers (super admin) ----------------------------------------------------------
+    const providerCard = (kind) => {
+      const inputs = {};
+      const isMail = kind === "email";
+      const keys = isMail
+        ? [["EMAIL_PROVIDER", "Send e-mail with"], ["SMTP_HOST", "Mail server (SMTP host)"], ["SMTP_PORT", "Port"], ["SMTP_SECURE", "Encryption"], ["SMTP_USER", "Login (user name)"], ["SMTP_PASSWORD", "Password"], ["EMAIL_FROM", "Sender shown on the e-mail"]]
+        : [["SMS_PROVIDER", "Send SMS with"], ["SMS_DEFAULT_COUNTRY_CODE", "Country code for numbers written without one"], ["FAST2SMS_API_KEY", "Fast2SMS: API key"], ["FAST2SMS_ROUTE", "Fast2SMS: route"], ["FAST2SMS_SENDER_ID", "Fast2SMS: sender ID (DLT route only)"], ["FAST2SMS_DLT_TEMPLATE_ID", "Fast2SMS: template ID (DLT route only)"], ["TWILIO_ACCOUNT_SID", "Twilio: Account SID"], ["TWILIO_AUTH_TOKEN", "Twilio: Auth token"], ["TWILIO_FROM", "Twilio: your Twilio number"], ["TWILIO_MESSAGING_SERVICE_SID", "Twilio: messaging service SID (instead of number)"]];
+      const make = ([key, label]) => {
+        const f = F[key];
+        let el;
+        if (f.type === "choice") el = h("select", {}, f.options.map((o) => h("option", { value: o, selected: o === f.value }, o === "none" ? "none (off)" : o)));
+        else el = h("input", { type: f.secret ? "password" : f.type === "port" ? "number" : "text", value: f.value, autocomplete: "off", placeholder: f.secret && f.set ? "saved - leave empty to keep it" : "" });
+        if (f.type === "choice" && !f.value) el.value = f.options[0];
+        inputs[key] = el;
+        return row(label, el, f.source === "file" && f.value ? "from config/notify.conf" : f.secret && f.set ? (f.source === "console" ? "saved from this page" : "set in config/notify.conf") : null);
+      };
+      const help = h("div", { class: "hint" });
+      const presets = cfg.presets[kind] || [];
+      const preset = h("select", {}, h("option", { value: "" }, "- pick your provider to fill the form -"), presets.map((p) => h("option", { value: p.id }, p.label)));
+      preset.addEventListener("change", () => {
+        const p = presets.find((x) => x.id === preset.value);
+        help.textContent = p ? p.help : "";
+        if (p) for (const [k, v] of Object.entries(p.values)) if (inputs[k]) inputs[k].value = v;
+      });
+      const rowsEl = keys.map(make);
+      const to = h("input", { placeholder: isMail ? "your e-mail address" : "+91 mobile number", autocomplete: "off" });
+      const save = actionBtn("Save", async () => {
+        const values = {};
+        for (const [k] of keys) values[k] = inputs[k].value;
+        await api("/notify/config", { method: "PUT", body: { values } });
+        toast("Saved. Now press 'Send test'.");
+        C.refresh();
+      }, "primary");
+      const test = actionBtn("Send test", async () => {
+        const r = await api("/notify/test", { method: "POST", body: { channel: kind, to: to.value } });
+        toast("Sent" + (r.ref ? " (" + r.ref + ")" : "") + " - check the " + (isMail ? "inbox (and spam)" : "phone"));
+        C.refresh();
+      });
+      const gw = isMail ? null : h("div", { class: "hint" }, "Gateway addresses (change in config/notify.conf): Fast2SMS " + (cfg.gateways.fast2sms || "-") + " - Twilio " + (cfg.gateways.twilio || "-"));
+      const r = isMail ? ov.email : ov.sms;
+      return card(
+        (isMail ? "E-mail" : "SMS") + " provider  ",
+        h("div", {}, r.configured ? badge("connected: " + r.provider, "green") : badge("not connected", "red"), r.missing.length ? h("div", { class: "hint" }, "Still missing: " + r.missing.join(", ")) : null),
+        row("Provider", preset, null),
+        help,
+        rowsEl,
+        gw,
+        h("div", { class: "foot" }, save),
+        row("Test message to", h("div", {}, to, " ", test), "Uses the SAVED settings, and shows the provider's own answer if it fails."),
+      );
+    };
+
+    // ---- 2. who receives what ------------------------------------------------------------------
+    const reach = (p) => {
+      const out = [];
+      if (!p.active) out.push(badge("inactive post - gets no alerts", "grey"));
+      const one = (name, value, r) => !value ? badge(name + ": no contact", "grey") : !r.enabled ? badge(name + ": switched off", "grey") : !r.configured ? badge(name + ": provider not connected", "amber") : badge(name + ": will be sent", "green");
+      out.push(one("e-mail", p.alert_email, ov.email), " ", one("SMS", p.alert_phone, ov.sms));
+      return out;
+    };
+    const postRow = (p) => {
+      const em = h("input", { type: "email", value: p.alert_email || "", placeholder: "name@example.com", autocomplete: "off" });
+      const ph = h("input", { type: "tel", value: p.alert_phone || "", placeholder: "+91 98765 43210", autocomplete: "off" });
+      const save = actionBtn("Save", async () => {
+        await api(`/posts/${p.id}`, { method: "PATCH", body: { alert_email: em.value, alert_phone: ph.value } });
+        toast(`Saved contacts of ${p.name}`);
+        C.refresh();
+      }, "sm");
+      return h("tr", {}, h("td", {}, h("b", {}, p.name), h("div", { class: "hint" }, p.zone_name)), h("td", {}, em), h("td", {}, ph), h("td", {}, reach(p)), h("td", {}, save));
+    };
+    const contacts = h(
+      "div",
+      {},
+      card("2. Who receives the alerts", h("div", { class: "hint" }, "Each post's alerts go to the e-mail and mobile number written on its row. Leave a field empty to send nothing on that channel. Write mobile numbers with the country code (+91...); a 10-digit Indian number also works.")),
+      table(["Post", "Alert e-mail", "Alert mobile", "What will happen", ""], ov.posts.map(postRow), "No posts yet - add them under Zones & posts."),
+    );
+    let extras = null;
+    if (isSuper) {
+      const xe = h("input", { value: ov.extras.emails.join(", "), placeholder: "supervisor@example.com, control@example.com", autocomplete: "off" });
+      const xp = h("input", { value: ov.extras.phones.join(", "), placeholder: "+919876543210, +919123456789", autocomplete: "off" });
+      extras = card(
+        "Control-room copies (optional)",
+        h("div", { class: "hint" }, "These people receive a copy of EVERY outgoing message, whichever post it was for."),
+        row("E-mail addresses (comma separated)", xe),
+        row("Mobile numbers (comma separated)", xp),
+        h("div", { class: "foot" }, actionBtn("Save copies", async () => {
+          await api("/settings", { method: "PUT", body: { notify_extra_emails: xe.value, notify_extra_phones: xp.value } });
+          toast("Saved");
+          C.refresh();
+        }, "primary")),
+      );
+    }
+
+    // ---- 3. rules (super admin) ---------------------------------------------------------------
+    let rules = null;
+    if (isSuper) {
+      const onE = h("input", { type: "checkbox", checked: !!R.notify_email_enabled });
+      const onS = h("input", { type: "checkbox", checked: !!R.notify_sms_enabled });
+      const KINDS = [["alert", "Alerts sent to a post (and 'alert dismissed')"], ["incident", "Incidents raised by officers"], ["request", "Footage request updates"], ["footage", "Footage delivered"], ["evidence", "Evidence flags"]];
+      const have = String(R.notify_kinds || "").split(/[,;\s]+/).filter(Boolean);
+      const kinds = KINDS.map(([k]) => h("input", { type: "checkbox", checked: have.includes(k) }));
+      const prio = h("select", {}, Array.from({ length: 10 }, (_, i) => h("option", { value: i + 1, selected: i + 1 === Number(R.notify_sms_min_priority) }, i + 1 === 1 ? "1 - every alert" : String(i + 1))));
+      const sm = ov.sample;
+      rules = card(
+        "3. Rules",
+        row("Send e-mail", onE, "Master switch for e-mail."),
+        row("Send SMS", onS, "Master switch for SMS."),
+        row("Which messages go out", h("div", {}, KINDS.map(([k, t], i) => h("div", {}, kinds[i], " ", t)))),
+        row("SMS only for alerts of priority", prio, "Lower-priority alerts are still e-mailed. SMS costs money, so you may want 7 or higher."),
+        h("div", { class: "foot" }, actionBtn("Save rules", async () => {
+          await api("/settings", { method: "PUT", body: { notify_email_enabled: onE.checked, notify_sms_enabled: onS.checked, notify_kinds: KINDS.filter((_, i) => kinds[i].checked).map(([k]) => k).join(","), notify_sms_min_priority: prio.value } });
+          toast("Saved - effective immediately");
+          C.refresh();
+        }, "primary")),
+        h("h3", {}, "What a message looks like"),
+        h("div", { class: "hint" }, "E-mail subject: " + sm.subject),
+        h("pre", { class: "mono" }, sm.text),
+        h("div", { class: "hint" }, "SMS text: " + sm.sms),
+      );
+    }
+
+    // ---- delivery log (super admin) -----------------------------------------------------------
+    let log = null;
+    if (isSuper) {
+      const col = { sent: "green", pending: "amber", failed: "red", expired: "grey", skipped: "grey" };
+      log = h(
+        "div",
+        {},
+        head("Delivery log", st.last_24h.length ? h("span", { class: "muted" }, "last 24 h: " + st.last_24h.map((x) => x.n + " " + x.channel + " " + x.status).join(", ")) : null,
+          actionBtn("Refresh", async () => C.refresh()),
+          actionBtn("Retry failed (last 24 h)", async () => { const r = await api("/notify/retry", { method: "POST", body: {} }); toast(r.requeued + " message(s) queued again"); C.refresh(); })),
+        table(
+          ["Time", "Channel", "To", "Notice", "Post", "Status", "Tries", "Detail"],
+          st.recent.map((d) => h("tr", {}, h("td", {}, fmtTime(d.created_at)), h("td", {}, d.channel), h("td", {}, d.recipient), h("td", {}, d.kind), h("td", {}, d.post_name || "-"), h("td", {}, badge(d.status, col[d.status] || "grey")), h("td", {}, d.attempts), h("td", { class: "muted" }, d.last_error || (d.sent_at ? "sent " + fmtShort(d.sent_at) : "")))),
+          "Nothing sent yet. After steps 1-3, the next alert (or a test message) appears here.",
+        ),
+      );
+    }
+
+    return h(
+      "div",
+      {},
+      head("E-mail & SMS alerts"),
+      how,
+      isSuper ? h("div", {}, head("1. Connect a provider"), providerCard("email"), providerCard("sms")) : null,
+      contacts,
+      extras,
+      rules,
+      log,
+    );
   };
 
   V.audit = async () => {

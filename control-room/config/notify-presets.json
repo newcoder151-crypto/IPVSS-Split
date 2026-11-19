@@ -1,0 +1,37 @@
+{
+  "_comment": "Presets of the CMS console page 'E-mail & SMS' (they only fill the form; nothing is saved until you press Save). Edit or add providers here - no code change needed. 'values' use the same keys as config/notify.conf.",
+  "email": [
+    {
+      "id": "brevo",
+      "label": "Brevo (free: 300 e-mails/day)",
+      "values": { "EMAIL_PROVIDER": "smtp", "SMTP_HOST": "smtp-relay.brevo.com", "SMTP_PORT": "587", "SMTP_SECURE": "starttls" },
+      "help": "Create a free Brevo account. Login = your Brevo e-mail. Password = the SMTP key (Brevo > SMTP & API > SMTP). From = a sender address you verified in Brevo."
+    },
+    {
+      "id": "gmail",
+      "label": "Gmail (free)",
+      "values": { "EMAIL_PROVIDER": "smtp", "SMTP_HOST": "smtp.gmail.com", "SMTP_PORT": "587", "SMTP_SECURE": "starttls" },
+      "help": "Login = your Gmail address. Password = an App password (Google account > Security > 2-step verification > App passwords), not your normal password. From = the same Gmail address."
+    },
+    {
+      "id": "other",
+      "label": "Other SMTP server",
+      "values": { "EMAIL_PROVIDER": "smtp" },
+      "help": "Enter the server name, port and login your mail provider gave you."
+    }
+  ],
+  "sms": [
+    {
+      "id": "fast2sms",
+      "label": "Fast2SMS (India)",
+      "values": { "SMS_PROVIDER": "fast2sms", "FAST2SMS_ROUTE": "q", "SMS_DEFAULT_COUNTRY_CODE": "91" },
+      "help": "Sign up at fast2sms.com (free credit, then a small recharge). API key = Fast2SMS panel > Dev API. Route 'q' (Quick SMS) needs no DLT registration; use 'dlt' once your template is approved."
+    },
+    {
+      "id": "twilio",
+      "label": "Twilio (worldwide; free trial = verified numbers only)",
+      "values": { "SMS_PROVIDER": "twilio" },
+      "help": "Account SID and Auth token are on the Twilio console home page. 'From' = your Twilio phone number (+1...). A free trial can text only numbers you verified in the Twilio console."
+    }
+  ]
+}

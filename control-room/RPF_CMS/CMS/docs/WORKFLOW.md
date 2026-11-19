@@ -98,6 +98,6 @@ Chromium has no H.264), so run `CODEC=vp9 node CMS/test/flow.js` if you run both
 ## 8. Not done / needs your decision
 * Real M-NVR authentication is by certificate fingerprint header (put mTLS in front in production).
 * Footage store is a shared folder (`MEDIA_ROOT`); swap `fsutil.js` for S3/MinIO for production.
-* Email/SMS: notifications go to the in-app bell and an optional webhook; wire your gateway to the webhook.
+* Email/SMS: notifications go to the in-app bell, to each post's alert e-mail / mobile (SMTP, Fast2SMS or Twilio; see docs/ALERT-CHANNELS.md) and to an optional webhook.
 * The map is a plain geo plot (no tiles) so it works on a closed network; a tile layer needs a map server.
 * Several CMS backends: jobs are advisory-locked, but SSE streams are per process (fine behind sticky sessions).
