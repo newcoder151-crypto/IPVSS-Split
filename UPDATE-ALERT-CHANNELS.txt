@@ -1,0 +1,15 @@
+UPDATE: e-mail + SMS alerts for the control room  (own page in the console: Administration -> E-mail & SMS)
+===========================================================================================================
+
+This zip holds ONLY the files that changed or are new (same folder structure as IPVSS-Split-main). It is not a complete package.
+
+HOW TO APPLY (on the control-room PC, no internet needed)
+  1. Stop the control room:      cd IPVSS-Split-main && bash run-offline.sh stop
+  2. Copy this zip into the folder that CONTAINS IPVSS-Split-main (the parent), then:
+         unzip -o IPVSS-offline-alert-channels-update.zip        (or: right-click -> Extract Here, replace existing files)
+  3. Start again:                bash run-offline.sh             (the database is updated automatically on start)
+  4. Open the CMS console as super admin (press Ctrl+F5 once so the browser loads the new design)
+     -> menu  Administration -> E-mail & SMS  and follow the three steps on that page. No file editing needed.
+
+Full guide: IPVSS-Split-main/control-room/docs/ALERT-CHANNELS.md
+Everything except actually sending works offline; sending needs the e-mail / SMS provider to be reachable (internet).

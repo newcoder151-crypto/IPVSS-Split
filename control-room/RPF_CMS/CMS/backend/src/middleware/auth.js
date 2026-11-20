@@ -7,11 +7,12 @@ const { unauthorized, forbidden, wrap } = require("../errors");
 const CONSOLE_ROLES = ["operator", "zone_admin", "super_admin"];
 const ISSUER = "cms-console";
 
-const signToken = (user) =>
-  jwt.sign({ sub: user.id }, config.jwtSecret, {
-    expiresIn: `${config.sessionHours}h`,
-    issuer: ISSUER,
-  });
+// config.sessionHours = 0: the token never expires. Otherwise it lasts that many hours and is renewed while in use (see requireAuth).
+const signToken = (user) => {
+  const opts = { issuer: ISSUER };
+  if (config.sessionHours > 0) opts.expiresIn = `${config.sessionHours}h`;
+  return jwt.sign({ sub: user.id }, config.jwtSecret, opts);
+};
 const verifyToken = (t) => jwt.verify(t, config.jwtSecret, { issuer: ISSUER });
 
 /** Loads the user fresh on every request so a disabled account loses access immediately. */
@@ -32,6 +33,14 @@ const requireAuth = wrap(async (req, res, next) => {
   const u = rows[0];
   if (!u || u.status !== "active" || !CONSOLE_ROLES.includes(u.role))
     throw unauthorized("account not active");
+  // Sliding session: once half of the token's life is gone, hand the browser a fresh one (X-Renewed-Token),
+  // so a console that is open (it polls every few seconds) never reaches the end of its session.
+  if (
+    payload.exp &&
+    payload.iat &&
+    payload.exp - Math.floor(Date.now() / 1000) < (payload.exp - payload.iat) / 2
+  )
+    res.set("X-Renewed-Token", signToken(u));
   req.user = u;
   next();
 });

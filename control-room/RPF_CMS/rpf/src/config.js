@@ -17,7 +17,8 @@ const config = {
     password: process.env.DB_PASSWORD,
   },
   jwtSecret: process.env.JWT_SECRET || '',
-  sessionHours: int('SESSION_HOURS', 8),
+  // 0 (default) = a session never expires; a positive number of hours is renewed while the dashboard is open.
+  sessionHours: (() => { const raw = process.env.SESSION_HOURS; if (raw === undefined || String(raw).trim() === '') return 0; const v = Number(raw); return Number.isFinite(v) && v >= 0 ? v : 0; })(),
   mediaRoot: path.resolve(process.env.MEDIA_ROOT || './media'),
   // Other places the CMS may have stored footage. The CMS and RPF must share one MEDIA_ROOT; when they were started
   // separately (CMS default is <CMS>/media, RPF default is ./media) the footage is not where RPF looks. RPF therefore

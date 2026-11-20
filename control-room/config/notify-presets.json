@@ -4,19 +4,31 @@
     {
       "id": "brevo",
       "label": "Brevo (free: 300 e-mails/day)",
-      "values": { "EMAIL_PROVIDER": "smtp", "SMTP_HOST": "smtp-relay.brevo.com", "SMTP_PORT": "587", "SMTP_SECURE": "starttls" },
+      "values": {
+        "EMAIL_PROVIDER": "smtp",
+        "SMTP_HOST": "smtp-relay.brevo.com",
+        "SMTP_PORT": "587",
+        "SMTP_SECURE": "starttls"
+      },
       "help": "Create a free Brevo account. Login = your Brevo e-mail. Password = the SMTP key (Brevo > SMTP & API > SMTP). From = a sender address you verified in Brevo."
     },
     {
       "id": "gmail",
       "label": "Gmail (free)",
-      "values": { "EMAIL_PROVIDER": "smtp", "SMTP_HOST": "smtp.gmail.com", "SMTP_PORT": "587", "SMTP_SECURE": "starttls" },
-      "help": "Login = your Gmail address. Password = an App password (Google account > Security > 2-step verification > App passwords), not your normal password. From = the same Gmail address."
+      "values": {
+        "EMAIL_PROVIDER": "smtp",
+        "SMTP_HOST": "smtp.gmail.com",
+        "SMTP_PORT": "587",
+        "SMTP_SECURE": "starttls"
+      },
+      "help": "Gmail does not accept your normal password for sending. Step 1: turn on 2-Step Verification (Google account > Security). Step 2: open myaccount.google.com/apppasswords, create a password named IPVSS and paste the 16 letters here. Login and Send-from = your Gmail address. (Tip: use a separate Gmail account just for alerts.)"
     },
     {
       "id": "other",
       "label": "Other SMTP server",
-      "values": { "EMAIL_PROVIDER": "smtp" },
+      "values": {
+        "EMAIL_PROVIDER": "smtp"
+      },
       "help": "Enter the server name, port and login your mail provider gave you."
     }
   ],
@@ -24,13 +36,19 @@
     {
       "id": "fast2sms",
       "label": "Fast2SMS (India)",
-      "values": { "SMS_PROVIDER": "fast2sms", "FAST2SMS_ROUTE": "q", "SMS_DEFAULT_COUNTRY_CODE": "91" },
+      "values": {
+        "SMS_PROVIDER": "fast2sms",
+        "FAST2SMS_ROUTE": "q",
+        "SMS_DEFAULT_COUNTRY_CODE": "91"
+      },
       "help": "Sign up at fast2sms.com (free credit, then a small recharge). API key = Fast2SMS panel > Dev API. Route 'q' (Quick SMS) needs no DLT registration; use 'dlt' once your template is approved."
     },
     {
       "id": "twilio",
       "label": "Twilio (worldwide; free trial = verified numbers only)",
-      "values": { "SMS_PROVIDER": "twilio" },
+      "values": {
+        "SMS_PROVIDER": "twilio"
+      },
       "help": "Account SID and Auth token are on the Twilio console home page. 'From' = your Twilio phone number (+1...). A free trial can text only numbers you verified in the Twilio console."
     }
   ]

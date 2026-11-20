@@ -4,7 +4,9 @@ const { pool } = require('../db');
 const { unauthorized, wrap } = require('../errors');
 
 function signToken(user) {
-  return jwt.sign({ sub: user.id }, config.jwtSecret, { expiresIn: `${config.sessionHours}h`, issuer: 'rpf-dashboard' });
+  const opts = { issuer: 'rpf-dashboard' };
+  if (config.sessionHours > 0) opts.expiresIn = `${config.sessionHours}h`;   // 0 = never expires
+  return jwt.sign({ sub: user.id }, config.jwtSecret, opts);
 }
 
 /**
@@ -24,6 +26,8 @@ const requireAuth = wrap(async (req, res, next) => {
       WHERE u.id = $1`, [payload.sub]);
   const user = rows[0];
   if (!user || user.status !== 'active' || user.role !== 'post_user' || !user.post_id) throw unauthorized('account not active');
+  // Sliding session: once half of the token's life is gone, hand the browser a fresh one (X-Renewed-Token), so an open dashboard never expires.
+  if (payload.exp && payload.iat && payload.exp - Math.floor(Date.now() / 1000) < (payload.exp - payload.iat) / 2) res.set('X-Renewed-Token', signToken(user));
   req.user = user;   // one dashboard serves every post: what an officer sees is decided by THEIR post_id, in every query
 
   next();

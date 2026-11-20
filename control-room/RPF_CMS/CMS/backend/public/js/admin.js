@@ -1281,19 +1281,23 @@
         toast(ex.message);
       }
     });
-    const pointer = h(
-      "div",
-      { class: "card pad" },
-      "E-mail and SMS alerts (providers, who receives what, rules, delivery log) have their own page: ",
-      h("a", { href: "#", onclick: (e) => { e.preventDefault(); C.go("notify"); } }, "Administration > E-mail & SMS"),
-      ".",
-    );
-    return h("div", {}, head("Settings"), form, pointer);
+    return h("div", {}, head("Settings"), form);
   };
 
   // =========================================================================================
-  // E-mail & SMS: connect a provider, say who receives what, rules, delivery log
+  // E-mail & SMS - made for a first-time user: 3 steps, only the essential fields, everything technical tucked into "more" sections
   // =========================================================================================
+  // Unsaved typing in the contact boxes survives a page refresh (e.g. after saving another row), for 30 minutes or until it is saved.
+  const ntDraft = {};
+  const ntTrack = (key, el, saved) => {
+    const d = ntDraft[key];
+    if (d && Date.now() - d.t < 1800000) el.value = d.v;
+    const note = () => { if (el.value === String(saved == null ? "" : saved)) delete ntDraft[key]; else ntDraft[key] = { v: el.value, t: Date.now() }; };
+    el.addEventListener("input", note);
+    el.addEventListener("change", note);
+    return el;
+  };
+  const ntClear = (prefix) => Object.keys(ntDraft).filter((k) => k.startsWith(prefix)).forEach((k) => delete ntDraft[k]);
   V.notify = async () => {
     const isSuper = C.isSuper();
     const [ov, cfg, st, ruleRows] = await Promise.all([
@@ -1304,172 +1308,194 @@
     ]);
     const R = Object.fromEntries(ruleRows.map((r) => [r.key, r.value]));
     const F = cfg ? Object.fromEntries(cfg.fields.map((f) => [f.key, f])) : {};
-    const card = (title, ...kids) => h("div", { class: "card pad settings" }, h("h3", {}, title), kids);
-    const row = (label, el, hint) => h("div", { class: "srow" }, h("label", {}, label), h("div", {}, el, hint ? h("div", { class: "hint" }, hint) : null));
+    let uid = 0;
+    const field = (label, control, o = {}) => {
+      const linkable = /^(INPUT|SELECT)$/.test(control.tagName); // label <-> box: clicking the label focuses the box, screen readers read it
+      if (linkable) control.id = "nt-f" + ++uid;
+      return h("div", { class: "nt-field" + (o.wide ? " wide" : "") }, h("label", { for: linkable ? control.id : null }, label), control, o.hint ? h("div", { class: "hint" }, o.hint) : null);
+    };
+    const more = (title, open, ...kids) => h("details", { class: "nt-more", open: open ? true : null }, h("summary", {}, title), h("div", { class: "nt-moreinner" }, kids));
+    const stepCard = (n, title, sub, ...kids) => h("section", { class: "nt-card" }, h("header", {}, h("span", { class: "num" }, n), h("div", {}, h("h3", {}, title), h("p", { class: "sub" }, sub))), kids);
+    const chip = (text, cls, tip) => h("span", { class: "nt-chip " + (cls || ""), title: tip || null }, text);
+    const NEED = { SMTP_HOST: "mail server", SMTP_PORT: "port", EMAIL_FROM: "sender address", SMTP_PASSWORD: "password", FAST2SMS_API_URL: "gateway address (config file)", FAST2SMS_API_KEY: "API key", FAST2SMS_SENDER_ID: "sender ID", FAST2SMS_DLT_TEMPLATE_ID: "template ID", TWILIO_ACCOUNT_SID: "Account SID", TWILIO_AUTH_TOKEN: "Auth token", "TWILIO_FROM (or TWILIO_MESSAGING_SERVICE_SID)": "Twilio number", TWILIO_API_URL: "gateway address (config file)" };
+    const needs = (r) => { const l = r.missing.map((m) => NEED[m]).filter(Boolean); return l.length ? "Still needed: " + l.join(", ") + "." : ""; };
 
-    // ---- 0. how it works + what is still missing ----------------------------------------
-    const withMail = ov.posts.filter((p) => p.alert_email).length;
-    const withPhone = ov.posts.filter((p) => p.alert_phone).length;
-    const chk = (ok, text, warn) => h("div", {}, ok ? badge("done", "green") : badge("to do", warn || "red"), " ", text);
-    const how = card(
-      "How alerts reach people",
-      h("p", {}, "When the CMS sends an alert or an incident to an RPF post, the officers see it in the RPF dashboard as before. With this page the same message is ALSO e-mailed to that post's alert e-mail and texted to that post's alert mobile number. If an alert is escalated to another post, that post's contacts are used. People you list under 'Control-room copies' receive every message."),
-      h("p", { class: "hint" }, "Three steps. Each line below turns green when it is done."),
-      chk(ov.email.configured || ov.sms.configured, isSuper ? "1. Connect an e-mail and/or SMS provider" : "1. A provider is connected (super admin does this)"),
-      chk(withMail + withPhone > 0, `2. Fill each post's alert e-mail / mobile (${withMail} of ${ov.posts.length} posts have an e-mail, ${withPhone} have a mobile number)`),
-      chk(ov.email.enabled || ov.sms.enabled, `3. Switch the channels on (e-mail: ${ov.email.enabled ? "on" : "off"}, SMS: ${ov.sms.enabled ? "on" : "off"})`),
-    );
+    const mails = ov.posts.filter((p) => p.alert_email).length;
+    const phones = ov.posts.filter((p) => p.alert_phone).length;
+    const s1 = ov.email.configured || ov.sms.configured;
+    const s2 = mails + phones > 0;
+    const s3 = ov.email.enabled || ov.sms.enabled;
 
-    // ---- 1. providers (super admin) ----------------------------------------------------------
-    const providerCard = (kind) => {
-      const inputs = {};
+    // ---- header + progress ---------------------------------------------------------------------
+    const top = h("div", { class: "nt-top" }, h("h2", {}, "E-mail & SMS alerts"),
+      h("p", { class: "nt-lead" }, isSuper ? "Get an e-mail and/or an SMS whenever an alert reaches a post. Three quick steps - each one turns green when it is done." : "Choose where the alerts of your posts are sent by e-mail and SMS."));
+    const stepper = h("div", { class: "nt-steps" }, [
+      ["1", "Connect", s1, s1 ? [ov.email.configured ? "E-mail" : null, ov.sms.configured ? "SMS" : null].filter(Boolean).join(" + ") + " ready" : "Not done yet"],
+      ["2", "Add contacts", s2, s2 ? `${mails} e-mail, ${phones} mobile` : "Not done yet"],
+      ["3", "Switch on", s3, s3 ? [ov.email.enabled ? "E-mail" : null, ov.sms.enabled ? "SMS" : null].filter(Boolean).join(" + ") + " on" : "Not done yet"],
+    ].map(([n, t, done, s]) => h("div", { class: "nt-step" + (done ? " done" : "") }, h("span", { class: "num" }, done ? "✓" : n), h("div", {}, h("b", {}, t), h("span", { class: "s" }, s)))));
+
+    // ---- step 1: providers ---------------------------------------------------------------------
+    const tile = (kind) => {
       const isMail = kind === "email";
-      const keys = isMail
-        ? [["EMAIL_PROVIDER", "Send e-mail with"], ["SMTP_HOST", "Mail server (SMTP host)"], ["SMTP_PORT", "Port"], ["SMTP_SECURE", "Encryption"], ["SMTP_USER", "Login (user name)"], ["SMTP_PASSWORD", "Password"], ["EMAIL_FROM", "Sender shown on the e-mail"]]
-        : [["SMS_PROVIDER", "Send SMS with"], ["SMS_DEFAULT_COUNTRY_CODE", "Country code for numbers written without one"], ["FAST2SMS_API_KEY", "Fast2SMS: API key"], ["FAST2SMS_ROUTE", "Fast2SMS: route"], ["FAST2SMS_SENDER_ID", "Fast2SMS: sender ID (DLT route only)"], ["FAST2SMS_DLT_TEMPLATE_ID", "Fast2SMS: template ID (DLT route only)"], ["TWILIO_ACCOUNT_SID", "Twilio: Account SID"], ["TWILIO_AUTH_TOKEN", "Twilio: Auth token"], ["TWILIO_FROM", "Twilio: your Twilio number"], ["TWILIO_MESSAGING_SERVICE_SID", "Twilio: messaging service SID (instead of number)"]];
-      const make = ([key, label]) => {
+      const r = isMail ? ov.email : ov.sms;
+      const inputs = {};
+      const mk = (key, label, o = {}) => {
         const f = F[key];
-        let el;
-        if (f.type === "choice") el = h("select", {}, f.options.map((o) => h("option", { value: o, selected: o === f.value }, o === "none" ? "none (off)" : o)));
-        else el = h("input", { type: f.secret ? "password" : f.type === "port" ? "number" : "text", value: f.value, autocomplete: "off", placeholder: f.secret && f.set ? "saved - leave empty to keep it" : "" });
-        if (f.type === "choice" && !f.value) el.value = f.options[0];
-        inputs[key] = el;
-        return row(label, el, f.source === "file" && f.value ? "from config/notify.conf" : f.secret && f.set ? (f.source === "console" ? "saved from this page" : "set in config/notify.conf") : null);
+        let c;
+        if (f.type === "choice") {
+          c = h("select", {}, f.options.map((op) => h("option", { value: op, selected: op === f.value }, (o.names && o.names[op]) || op)));
+          if (!f.value) c.value = f.options[0];
+        } else {
+          c = h("input", { type: f.secret ? "password" : f.type === "port" ? "number" : "text", value: f.value, autocomplete: "off", placeholder: f.secret && f.set ? "saved - leave empty to keep" : o.ph || "" });
+        }
+        inputs[key] = c;
+        return field(label, c, { wide: o.wide });
       };
-      const help = h("div", { class: "hint" });
       const presets = cfg.presets[kind] || [];
-      const preset = h("select", {}, h("option", { value: "" }, "- pick your provider to fill the form -"), presets.map((p) => h("option", { value: p.id }, p.label)));
-      preset.addEventListener("change", () => {
-        const p = presets.find((x) => x.id === preset.value);
-        help.textContent = p ? p.help : "";
+      const help = h("div", { class: "nt-help hidden" });
+      const showHelp = (p) => { help.textContent = p ? p.help : ""; help.classList.toggle("hidden", !p); };
+      let startId = "";
+      if (isMail) { const hit = presets.find((p) => p.values.SMTP_HOST && p.values.SMTP_HOST === F.SMTP_HOST.value); startId = hit ? hit.id : F.SMTP_HOST.value ? "other" : ""; }
+      else startId = presets.some((p) => p.id === F.SMS_PROVIDER.value) ? F.SMS_PROVIDER.value : "";
+      const sel = h("select", {}, h("option", { value: "" }, "Choose…"), presets.map((p) => h("option", { value: p.id, selected: p.id === startId }, p.label)));
+      sel.value = startId;
+      let body, adv;
+      if (isMail) {
+        body = [mk("SMTP_USER", "Login (usually your e-mail)", { ph: "you@example.com" }), mk("SMTP_PASSWORD", "Password or key"), mk("EMAIL_FROM", "Send e-mails from", { wide: true, ph: "you@example.com" })];
+        adv = more("Advanced: mail server", startId === "other", h("div", { class: "nt-form" }, mk("SMTP_HOST", "Mail server", { wide: true }), mk("SMTP_PORT", "Port"), mk("SMTP_SECURE", "Encryption", { names: { starttls: "Standard (STARTTLS)", ssl: "SSL", none: "None" } })));
+      } else {
+        const fast = h("div", { class: "nt-form" }, mk("FAST2SMS_API_KEY", "Fast2SMS API key", { wide: true }));
+        const tw = h("div", { class: "nt-form" }, mk("TWILIO_ACCOUNT_SID", "Account SID", { wide: true }), mk("TWILIO_AUTH_TOKEN", "Auth token"), mk("TWILIO_FROM", "Your Twilio number", { ph: "+1 415 555 0123" }));
+        const sync = () => { fast.classList.toggle("hidden", sel.value !== "fast2sms"); tw.classList.toggle("hidden", sel.value !== "twilio"); };
+        sel.addEventListener("change", sync);
+        sync();
+        body = [fast, tw];
+        adv = more("Advanced", false, h("div", { class: "nt-form" }, mk("SMS_DEFAULT_COUNTRY_CODE", "Default country code", { ph: "91" }), mk("FAST2SMS_ROUTE", "Fast2SMS type", { names: { q: "Quick SMS", dlt: "DLT template" } }), mk("FAST2SMS_SENDER_ID", "Fast2SMS sender ID (DLT only)"), mk("FAST2SMS_DLT_TEMPLATE_ID", "Fast2SMS template ID (DLT only)"), mk("TWILIO_MESSAGING_SERVICE_SID", "Twilio messaging service (instead of a number)", { wide: true })));
+      }
+      sel.addEventListener("change", () => {
+        const p = presets.find((x) => x.id === sel.value);
+        showHelp(p);
         if (p) for (const [k, v] of Object.entries(p.values)) if (inputs[k]) inputs[k].value = v;
+        if (p && p.id === "other") adv.open = true;
       });
-      const rowsEl = keys.map(make);
-      const to = h("input", { placeholder: isMail ? "your e-mail address" : "+91 mobile number", autocomplete: "off" });
+      showHelp(presets.find((p) => p.id === startId));
       const save = actionBtn("Save", async () => {
         const values = {};
-        for (const [k] of keys) values[k] = inputs[k].value;
+        for (const k of Object.keys(inputs)) values[k] = inputs[k].value;
+        if (isMail) values.EMAIL_PROVIDER = inputs.SMTP_HOST.value.trim() ? "smtp" : "none";
+        else values.SMS_PROVIDER = sel.value || "none";
         await api("/notify/config", { method: "PUT", body: { values } });
-        toast("Saved. Now press 'Send test'.");
+        toast("Saved");
         C.refresh();
       }, "primary");
+      const refreshSave = () => { save.disabled = isMail ? !(sel.value || inputs.SMTP_HOST.value.trim()) : !sel.value; }; // nothing to save until a service is chosen
+      refreshSave();
+      sel.addEventListener("change", refreshSave);
+      if (isMail) inputs.SMTP_HOST.addEventListener("input", refreshSave);
+      const to = h("input", { placeholder: isMail ? "your e-mail address" : "your mobile, e.g. +91 98765 43210", autocomplete: "off" });
       const test = actionBtn("Send test", async () => {
-        const r = await api("/notify/test", { method: "POST", body: { channel: kind, to: to.value } });
-        toast("Sent" + (r.ref ? " (" + r.ref + ")" : "") + " - check the " + (isMail ? "inbox (and spam)" : "phone"));
-        C.refresh();
+        const res = await api("/notify/test", { method: "POST", body: { channel: kind, to: to.value } });
+        toast("Test sent" + (res.ref ? " (" + res.ref + ")" : "") + " - check your " + (isMail ? "inbox (and spam folder)" : "phone"));
       });
-      const gw = isMail ? null : h("div", { class: "hint" }, "Gateway addresses (change in config/notify.conf): Fast2SMS " + (cfg.gateways.fast2sms || "-") + " - Twilio " + (cfg.gateways.twilio || "-"));
-      const r = isMail ? ov.email : ov.sms;
-      return card(
-        (isMail ? "E-mail" : "SMS") + " provider  ",
-        h("div", {}, r.configured ? badge("connected: " + r.provider, "green") : badge("not connected", "red"), r.missing.length ? h("div", { class: "hint" }, "Still missing: " + r.missing.join(", ")) : null),
-        row("Provider", preset, null),
-        help,
-        rowsEl,
-        gw,
-        h("div", { class: "foot" }, save),
-        row("Test message to", h("div", {}, to, " ", test), "Uses the SAVED settings, and shows the provider's own answer if it fails."),
-      );
+      const form = [field(isMail ? "E-mail service" : "SMS service", sel, { wide: true }), help, h("div", { class: isMail ? "nt-form" : "" }, body), adv, h("div", { class: "nt-actions" }, save)]; // SMS: the two provider groups are already grids
+      return h("div", { class: "nt-tile" },
+        h("div", { class: "nt-tilehead" }, h("h4", {}, isMail ? "E-mail" : "SMS"), r.configured ? chip("Connected", "ok") : chip("Not connected", "warn")),
+        r.configured ? field("Check that it works", h("div", { class: "nt-test" }, to, test)) : (needs(r) ? h("div", { class: "hint" }, needs(r)) : null),
+        r.configured ? more("Change settings", false, form) : h("div", { class: "nt-moreinner" }, form));
     };
+    const step1 = isSuper ? stepCard("1", "Connect a service to send messages", "Do this once. You need a free account with an e-mail and/or SMS company - the help text appears when you choose one.", h("div", { class: "nt-tiles" }, tile("email"), tile("sms"))) : null;
 
-    // ---- 2. who receives what ------------------------------------------------------------------
-    const reach = (p) => {
-      const out = [];
-      if (!p.active) out.push(badge("inactive post - gets no alerts", "grey"));
-      const one = (name, value, r) => !value ? badge(name + ": no contact", "grey") : !r.enabled ? badge(name + ": switched off", "grey") : !r.configured ? badge(name + ": provider not connected", "amber") : badge(name + ": will be sent", "green");
-      out.push(one("e-mail", p.alert_email, ov.email), " ", one("SMS", p.alert_phone, ov.sms));
-      return out;
-    };
+    // ---- step 2: contacts ------------------------------------------------------------------------
     const postRow = (p) => {
       const em = h("input", { type: "email", value: p.alert_email || "", placeholder: "name@example.com", autocomplete: "off" });
       const ph = h("input", { type: "tel", value: p.alert_phone || "", placeholder: "+91 98765 43210", autocomplete: "off" });
       const save = actionBtn("Save", async () => {
         await api(`/posts/${p.id}`, { method: "PATCH", body: { alert_email: em.value, alert_phone: ph.value } });
-        toast(`Saved contacts of ${p.name}`);
+        ntClear(`post:${p.id}:`);
+        toast(`Saved - ${p.name}`);
         C.refresh();
-      }, "sm");
-      return h("tr", {}, h("td", {}, h("b", {}, p.name), h("div", { class: "hint" }, p.zone_name)), h("td", {}, em), h("td", {}, ph), h("td", {}, reach(p)), h("td", {}, save));
+      }, "sm primary");
+      ntTrack(`post:${p.id}:email`, em, p.alert_email || "");
+      ntTrack(`post:${p.id}:phone`, ph, p.alert_phone || "");
+      const dirty = () => { save.disabled = em.value.trim() === (p.alert_email || "") && ph.value.trim() === (p.alert_phone || ""); };
+      dirty();
+      em.addEventListener("input", dirty);
+      ph.addEventListener("input", dirty);
+      const chips = [];
+      if (!p.active) chips.push(chip("Post is inactive", "", "Inactive posts get no alerts"));
+      const one = (name, has, r, tip) => { if (!has) return; chips.push(!r.enabled ? chip(name + " is off", "", "Turn it on in step 3") : !r.configured ? chip(name + " not connected", "warn", "Do step 1") : chip(name + " ✓", "ok", tip)); };
+      one("E-mail", p.alert_email, ov.email, "Alerts will be e-mailed here");
+      one("SMS", p.alert_phone, ov.sms, "Alerts will be texted here");
+      return h("div", { class: "nt-post" }, h("div", { class: "who" }, h("b", {}, p.name), h("small", {}, p.zone_name)), em, ph, save, chips.length ? h("div", { class: "nt-chips" }, chips) : null);
     };
-    const contacts = h(
-      "div",
-      {},
-      card("2. Who receives the alerts", h("div", { class: "hint" }, "Each post's alerts go to the e-mail and mobile number written on its row. Leave a field empty to send nothing on that channel. Write mobile numbers with the country code (+91...); a 10-digit Indian number also works.")),
-      table(["Post", "Alert e-mail", "Alert mobile", "What will happen", ""], ov.posts.map(postRow), "No posts yet - add them under Zones & posts."),
-    );
-    let extras = null;
+    let copies = null;
     if (isSuper) {
-      const xe = h("input", { value: ov.extras.emails.join(", "), placeholder: "supervisor@example.com, control@example.com", autocomplete: "off" });
-      const xp = h("input", { value: ov.extras.phones.join(", "), placeholder: "+919876543210, +919123456789", autocomplete: "off" });
-      extras = card(
-        "Control-room copies (optional)",
-        h("div", { class: "hint" }, "These people receive a copy of EVERY outgoing message, whichever post it was for."),
-        row("E-mail addresses (comma separated)", xe),
-        row("Mobile numbers (comma separated)", xp),
-        h("div", { class: "foot" }, actionBtn("Save copies", async () => {
+      const xe = h("input", { value: ov.extras.emails.join(", "), placeholder: "supervisor@example.com", autocomplete: "off" });
+      const xp = h("input", { value: ov.extras.phones.join(", "), placeholder: "+91 98765 43210", autocomplete: "off" });
+      ntTrack("copies:emails", xe, ov.extras.emails.join(", "));
+      ntTrack("copies:phones", xp, ov.extras.phones.join(", "));
+      copies = more("Also send a copy of every message to the control room", ov.extras.emails.length + ov.extras.phones.length > 0 || Object.keys(ntDraft).some((k) => k.startsWith("copies:")),
+        h("div", { class: "nt-form" }, field("E-mail addresses", xe, { hint: "Separate several with commas." }), field("Mobile numbers", xp, { hint: "Separate several with commas." })),
+        h("div", { class: "nt-actions" }, actionBtn("Save", async () => {
           await api("/settings", { method: "PUT", body: { notify_extra_emails: xe.value, notify_extra_phones: xp.value } });
+          ntClear("copies:");
           toast("Saved");
           C.refresh();
-        }, "primary")),
-      );
+        }, "primary")));
     }
+    const step2 = stepCard(isSuper ? "2" : "•", isSuper ? "Who should receive the alerts?" : "Where your posts' alerts are sent", "An alert sent to a post is e-mailed and texted to the contacts on that post's row. Leave a box empty to skip that way of sending.",
+      ov.posts.length
+        ? [h("div", { class: "nt-cols" }, h("span", {}, "Post"), h("span", {}, "E-mail"), h("span", {}, "Mobile (with country code)"), h("span", {})), h("div", { class: "nt-posts" }, ov.posts.map(postRow))]
+        : h("div", { class: "nt-posts" }, h("div", { class: "nt-empty" }, "No posts yet. Add them under Administration > Zones & posts.")),
+      copies);
 
-    // ---- 3. rules (super admin) ---------------------------------------------------------------
-    let rules = null;
+    // ---- step 3: switches + rules -----------------------------------------------------------------
+    let step3 = null;
     if (isSuper) {
-      const onE = h("input", { type: "checkbox", checked: !!R.notify_email_enabled });
-      const onS = h("input", { type: "checkbox", checked: !!R.notify_sms_enabled });
-      const KINDS = [["alert", "Alerts sent to a post (and 'alert dismissed')"], ["incident", "Incidents raised by officers"], ["request", "Footage request updates"], ["footage", "Footage delivered"], ["evidence", "Evidence flags"]];
+      const sw = (key, title, desc, on, ready) => {
+        const cb = h("input", { type: "checkbox", checked: !!on });
+        cb.addEventListener("change", async () => {
+          try { await api("/settings", { method: "PUT", body: { [key]: cb.checked } }); toast(title + (cb.checked ? " turned on" : " turned off")); C.refresh(); }
+          catch (ex) { cb.checked = !cb.checked; toast(ex.message); }
+        });
+        return h("div", { class: "nt-switchrow" }, h("div", {}, h("b", {}, title), h("div", { class: "hint" }, desc), !ready ? h("div", { class: "nt-warn" }, "Not connected yet - finish step 1 first.") : null), h("label", { class: "nt-switch", title }, cb, h("span", { class: "nt-slider" })));
+      };
+      const KINDS = [["alert", "New alerts"], ["incident", "Incidents raised by officers"], ["request", "Footage request updates"], ["footage", "Footage delivered"], ["evidence", "Evidence flags"]];
       const have = String(R.notify_kinds || "").split(/[,;\s]+/).filter(Boolean);
       const kinds = KINDS.map(([k]) => h("input", { type: "checkbox", checked: have.includes(k) }));
-      const prio = h("select", {}, Array.from({ length: 10 }, (_, i) => h("option", { value: i + 1, selected: i + 1 === Number(R.notify_sms_min_priority) }, i + 1 === 1 ? "1 - every alert" : String(i + 1))));
-      const sm = ov.sample;
-      rules = card(
-        "3. Rules",
-        row("Send e-mail", onE, "Master switch for e-mail."),
-        row("Send SMS", onS, "Master switch for SMS."),
-        row("Which messages go out", h("div", {}, KINDS.map(([k, t], i) => h("div", {}, kinds[i], " ", t)))),
-        row("SMS only for alerts of priority", prio, "Lower-priority alerts are still e-mailed. SMS costs money, so you may want 7 or higher."),
-        h("div", { class: "foot" }, actionBtn("Save rules", async () => {
-          await api("/settings", { method: "PUT", body: { notify_email_enabled: onE.checked, notify_sms_enabled: onS.checked, notify_kinds: KINDS.filter((_, i) => kinds[i].checked).map(([k]) => k).join(","), notify_sms_min_priority: prio.value } });
-          toast("Saved - effective immediately");
-          C.refresh();
-        }, "primary")),
-        h("h3", {}, "What a message looks like"),
-        h("div", { class: "hint" }, "E-mail subject: " + sm.subject),
-        h("pre", { class: "mono" }, sm.text),
-        h("div", { class: "hint" }, "SMS text: " + sm.sms),
-      );
+      const prio = h("select", {}, Array.from({ length: 10 }, (_, i) => h("option", { value: i + 1, selected: i + 1 === Number(R.notify_sms_min_priority) }, i === 0 ? "All alerts" : `Priority ${i + 1} and higher`)));
+      step3 = stepCard("3", "Switch it on", "Turn on the ways you want to be notified. It takes effect immediately.",
+        h("div", { class: "nt-switches" },
+          sw("notify_email_enabled", "E-mail alerts", "Send an e-mail when an alert reaches a post.", R.notify_email_enabled, ov.email.configured),
+          sw("notify_sms_enabled", "SMS alerts", "Send an SMS when an alert reaches a post.", R.notify_sms_enabled, ov.sms.configured)),
+        more("More options: which messages, SMS priority, preview", false,
+          field("Which messages are sent", h("div", { class: "nt-checks" }, KINDS.map(([k, t], i) => h("label", { class: "nt-check" }, kinds[i], t))), { wide: true }),
+          field("Send SMS for", prio, { hint: "Lower-priority alerts are still e-mailed. SMS costs money, so you may prefer 7 and higher." }),
+          h("div", { class: "nt-actions" }, actionBtn("Save", async () => {
+            await api("/settings", { method: "PUT", body: { notify_kinds: KINDS.filter((_, i) => kinds[i].checked).map(([k]) => k).join(","), notify_sms_min_priority: prio.value } });
+            toast("Saved");
+            C.refresh();
+          }, "primary")),
+          field("What a message looks like", h("div", {}, h("div", { class: "hint" }, "E-mail subject: " + ov.sample.subject), h("pre", { class: "nt-pre mono" }, ov.sample.text), h("div", { class: "hint" }, "SMS: " + ov.sample.sms)), { wide: true })));
     }
 
-    // ---- delivery log (super admin) -----------------------------------------------------------
+    // ---- recent messages (closed by default) -------------------------------------------------------
     let log = null;
     if (isSuper) {
       const col = { sent: "green", pending: "amber", failed: "red", expired: "grey", skipped: "grey" };
-      log = h(
-        "div",
-        {},
-        head("Delivery log", st.last_24h.length ? h("span", { class: "muted" }, "last 24 h: " + st.last_24h.map((x) => x.n + " " + x.channel + " " + x.status).join(", ")) : null,
-          actionBtn("Refresh", async () => C.refresh()),
-          actionBtn("Retry failed (last 24 h)", async () => { const r = await api("/notify/retry", { method: "POST", body: {} }); toast(r.requeued + " message(s) queued again"); C.refresh(); })),
-        table(
-          ["Time", "Channel", "To", "Notice", "Post", "Status", "Tries", "Detail"],
-          st.recent.map((d) => h("tr", {}, h("td", {}, fmtTime(d.created_at)), h("td", {}, d.channel), h("td", {}, d.recipient), h("td", {}, d.kind), h("td", {}, d.post_name || "-"), h("td", {}, badge(d.status, col[d.status] || "grey")), h("td", {}, d.attempts), h("td", { class: "muted" }, d.last_error || (d.sent_at ? "sent " + fmtShort(d.sent_at) : "")))),
-          "Nothing sent yet. After steps 1-3, the next alert (or a test message) appears here.",
-        ),
-      );
+      const sum = st.last_24h.reduce((a, x) => { a[x.status] = (a[x.status] || 0) + x.n; return a; }, {});
+      const summary = Object.keys(sum).length ? "last 24 h: " + Object.entries(sum).map(([k, v]) => `${v} ${k}`).join(", ") : "nothing sent yet";
+      log = h("details", { class: "nt-card nt-log", open: st.recent.some((d) => d.status === "failed" || d.status === "pending") ? true : null },
+        h("summary", {}, "Recent messages", h("span", { class: "muted" }, summary)),
+        h("div", { class: "nt-logbody" },
+          h("div", { class: "nt-actions" }, actionBtn("Refresh", async () => C.refresh()), actionBtn("Send failed ones again", async () => { const x = await api("/notify/retry", { method: "POST", body: {} }); toast(x.requeued + " message(s) queued again"); C.refresh(); })),
+          h("div", { class: "nt-scroll" }, table(["When", "Type", "To", "Result"],
+            st.recent.slice(0, 15).map((d) => h("tr", {}, h("td", {}, fmtTime(d.created_at)), h("td", {}, d.channel === "sms" ? "SMS" : "E-mail"), h("td", {}, d.recipient), h("td", {}, badge(d.status, col[d.status] || "grey"), d.last_error ? h("span", { class: "nt-err" }, d.last_error) : null))),
+            "Nothing sent yet. Once the steps above are done, the next alert (or a test message) shows up here."))));
     }
 
-    return h(
-      "div",
-      {},
-      head("E-mail & SMS alerts"),
-      how,
-      isSuper ? h("div", {}, head("1. Connect a provider"), providerCard("email"), providerCard("sms")) : null,
-      contacts,
-      extras,
-      rules,
-      log,
-    );
+    return h("div", { class: "nt" }, top, isSuper ? stepper : null, step1, step2, step3, log);
   };
 
   V.audit = async () => {

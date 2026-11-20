@@ -10,57 +10,62 @@ Nothing about the in-app alerts depends on it: if the internet is down or a prov
 
 ## 1. Set it up - all on one page (10 minutes)
 
-Open the CMS console as **super admin** -> menu **Administration -> E-mail & SMS**. The page has a checklist at the top that turns green as you go.
+Open the CMS console as **super admin** -> menu **Administration -> E-mail & SMS**. At the top, three boxes (**Connect**, **Add contacts**, **Switch on**)
+turn green as you finish each step. Only the essential boxes are shown; technical ones are folded away under **Advanced** / **More options**.
 
-### Step 1 - Connect a provider (once)
+### Step 1 - Connect a service to send messages (once)
 
 **E-mail** (free options: Brevo - 300 e-mails/day, no expiry; or Gmail)
 
-1. Create the free account at your provider and get the SMTP login:
+1. Create the free account and get the login:
    * **Brevo:** Brevo -> *SMTP & API* -> SMTP: login = your Brevo e-mail, password = the **SMTP key**; verify a sender address.
-   * **Gmail:** turn on 2-step verification, then Google account -> Security -> **App passwords**; use that 16-letter password (not your normal one).
-2. On the page, card **E-mail provider**: pick **Brevo** or **Gmail** in the *Provider* list - the server and port fill in by themselves.
-3. Type your **Login**, **Password** and **Sender** (Gmail: your Gmail address; Brevo: the verified sender). Press **Save**.
-4. In *Test message to* type your own e-mail address and press **Send test**. Check the inbox (and spam). If it fails, the page shows the provider's own reason.
+   * **Gmail:** Gmail no longer accepts your normal password for sending (error `535-5.7.8 Username and Password not accepted`). First turn on **2-Step Verification** (Google account -> Security; the *App passwords* option does not exist until it is on), then open myaccount.google.com/apppasswords, create one named IPVSS and use those 16 letters as the password. Tip: use a separate Gmail account just for alerts. If you do not want 2-Step Verification, use Brevo instead.
+2. In the **E-mail** card choose **Brevo** or **Gmail** under *E-mail service* - the server and port fill in by themselves and a short help text appears.
+3. Type **Login**, **Password or key** and **Send e-mails from** (Gmail: your Gmail address; Brevo: the verified sender). Press **Save**.
+4. The card now says **Connected**. Under *Check that it works* type your own e-mail address and press **Send test** (look in spam too).
+   If it fails, the page shows the provider's own reason.
 
 **SMS** (India: Fast2SMS; anywhere: Twilio)
 
 1. **Fast2SMS:** sign up at fast2sms.com (free credit, then a small recharge), copy the **API key** from *Dev API*.
    **Twilio:** copy *Account SID*, *Auth token* and your Twilio number from the Twilio console (a free trial texts only numbers you verified there).
-2. Card **SMS provider**: pick the provider, paste the key (Fast2SMS) or SID / token / number (Twilio), press **Save**.
-   Fast2SMS route **q** = Quick SMS (no DLT registration needed). Keys are write-only: once saved the field only says "saved".
-3. *Test message to*: type your mobile number (e.g. `+91 98765 43210`) and press **Send test**.
+2. In the **SMS** card choose the service, paste the key (Fast2SMS) or SID / token / number (Twilio) and press **Save**.
+   Keys are write-only: once saved the box only says "saved". *Quick SMS* needs no DLT registration; use *DLT template* (under Advanced) once yours is approved.
+3. Under *Check that it works* type your mobile number (e.g. `+91 98765 43210`) and press **Send test**.
 
-### Step 2 - Say who receives the alerts
+To change anything later: **Change settings** on the card.
 
-Table **2. Who receives the alerts**: one row per RPF post. Type the post's **Alert e-mail** and **Alert mobile** and press **Save** on that row.
+### Step 2 - Who should receive the alerts?
+
+One row per RPF post. Type the post's **E-mail** and **Mobile** and press **Save** on that row (Save lights up only when you changed something;
+unsaved typing in other rows is kept).
 
 * **Alerts for a post go to that post's e-mail and mobile.** If an alert is escalated to another post, that post's contacts are used.
-* Leave a field empty = nothing is sent on that channel for that post.
-* The column *What will happen* tells you, per row, whether it will be sent or why not ("no contact", "switched off", "provider not connected").
-* **Control-room copies:** e-mail addresses / mobile numbers that receive a copy of **every** message (supervisors, duty officer). Comma separated.
-* Zone admins can fill the contacts of the posts in their own zone; only super admins see providers, rules and the log.
+* Leave a box empty = nothing is sent that way for that post.
+* A small label under the boxes tells you the state: **E-mail ✓** (will be sent), **E-mail is off** (do step 3), **E-mail not connected** (do step 1).
+* **Also send a copy of every message to the control room** (fold-out): e-mail addresses / mobile numbers of supervisors, comma separated.
+* Zone admins see only the posts of their own zone and can fill their contacts; the rest of the page is for super admins.
 
-### Step 3 - Switch on and choose the rules
+### Step 3 - Switch it on
 
-Card **3. Rules** (super admin): tick **Send e-mail** and/or **Send SMS**; choose which messages go out (new alerts, incidents, request updates, footage, evidence);
-optionally *SMS only for alerts of priority N or higher* (lower ones are still e-mailed). Press **Save rules**. Takes effect immediately.
-The card also shows what an e-mail / SMS looks like.
+Two switches: **E-mail alerts** and **SMS alerts**. They save by themselves and take effect immediately.
+**More options** (fold-out): which messages are sent (new alerts, incidents, footage request updates, ...), *Send SMS for* alerts of a minimum priority
+(lower ones are still e-mailed), and a preview of what a message looks like.
 
-Then trigger an alert (or press **Send test**) and look at the **Delivery log** at the bottom of the page: every message, status, tries and error.
-**Retry failed (last 24 h)** sends failed ones again after you fixed the key.
+Then trigger an alert (or press **Send test**) and open **Recent messages** at the bottom: every message with its result. It opens by itself when
+something failed and shows the reason; **Send failed ones again** retries them after you fixed the key.
 
 ### Optional: file instead of page
 
 `config/notify.conf` holds the same settings as defaults (useful for scripted installs). A value saved on the page **wins** over the file. Gateway
-addresses (Fast2SMS / Twilio URLs) and the provider presets of the form (`config/notify-presets.json`) are only in those files - edit them there,
+addresses (Fast2SMS / Twilio URLs) and the provider choices of the forms (`config/notify-presets.json`) are only in those files - edit them there,
 then `bash run-offline.sh restart`.
 
 ## 2. What the rules mean
 
 | Setting | Meaning |
 |---|---|
-| Send e-mail / Send SMS | master switch per channel |
+| E-mail alerts / SMS alerts (switches) | master switch per channel |
 | Which messages go out | `alert, incident` by default; add `request`, `footage`, `evidence` if wanted |
 | SMS only for priority >= N | lower-priority alerts are e-mailed but not texted (SMS costs money) |
 | Control-room copies | get a copy of every outgoing message |
@@ -73,7 +78,7 @@ then `bash run-offline.sh restart`.
    (`NOTIFY_RETRY_BASE_S`, doubling, up to `NOTIFY_RETRY_MAX` tries). A wrong key, an unknown recipient or an invalid number fails at once.
 3. **No internet at the control room?** Messages wait and go out as soon as the connection returns - but a message older than `NOTIFY_MAX_AGE_MIN`
    (default 120 min) is **dropped instead of arriving late**, because an hours-old alert would mislead.
-4. Every message is logged: **CMS console -> Administration -> E-mail & SMS -> Delivery log** (time, channel, recipient, status, tries, provider error). Kept `NOTIFY_LOG_DAYS` days.
+4. Every message is logged: **CMS console -> Administration -> E-mail & SMS -> Recent messages** (time, channel, recipient, status, tries, provider error). Kept `NOTIFY_LOG_DAYS` days.
 
 Sending e-mail / SMS needs the provider to be reachable (normally the internet). Everything else in the offline package works without it.
 
@@ -95,7 +100,7 @@ Sending e-mail / SMS needs the provider to be reachable (normally the internet).
 | `config/notify.conf`, `config/notify-presets.json` | new: default provider settings / keys / rules (read by `start.sh`; environment wins), and the presets of the console form |
 | `RPF_CMS/CMS/sql/migrations/008_notify_provider_config.sql` | table for provider logins entered on the console page (secrets are write-only; not readable by the RPF role) |
 | `.../services/providerConfig.js` | merges file defaults with the values saved on the page |
-| `.../public/js/admin.js`, `boot.js` | new page **Administration -> E-mail & SMS** (`V.notify`), menu entry |
+| `.../public/js/admin.js`, `boot.js`, `public/console.css` | new page **Administration -> E-mail & SMS** (`V.notify`), menu entry |
 | `start.sh` | `load_notify_conf` exports the `EMAIL_* SMTP_* SMS_* FAST2SMS_* TWILIO_* NOTIFY_*` keys to CMS and fills `NOTIFY_RPF_URL` |
 | `RPF_CMS/CMS/sql/migrations/007_alert_channels.sql` | `rpf_post.alert_email / alert_phone`, table `notification_delivery` |
 | `.../services/outbound.js` | outbox: enqueue (same transaction, savepoint-guarded), worker, status, test send |

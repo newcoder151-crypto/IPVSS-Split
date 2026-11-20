@@ -129,3 +129,103 @@ html[data-theme="dark"] .login-wrap { background: radial-gradient(circle at 30% 
 .sgroup { margin-left: 14px; }
 .sgroup > summary { padding: 5px 4px; font-size: 13px; font-weight: 600; color: var(--muted, #5b6b80); }
 .dg-count { margin-left: auto; font-weight: 500; font-size: 12px; color: var(--muted, #5b6b80); }
+
+/* ===== E-mail & SMS page (Administration > E-mail & SMS). Everything is scoped to .nt so no other page is affected. Uses the theme variables, so dark mode works. ===== */
+.nt { max-width: 940px; display: flex; flex-direction: column; gap: 18px; }
+.nt-top h2 { font-size: 22px; margin: 0 0 4px; }
+.nt-lead { margin: 0; color: var(--muted); font-size: 14px; max-width: 68ch; }
+
+/* progress strip */
+.nt-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.nt-step { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.nt-step .num { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--tag-bg); color: var(--muted); font-weight: 700; font-size: 13px; }
+.nt-step b { display: block; font-size: 13.5px; }
+.nt-step .s { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-step.done { background: var(--green-soft); border-color: var(--green); }
+.nt-step.done .num { background: var(--green); color: #fff; }
+
+/* a step card */
+.nt-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 22px 24px; }
+.nt-card > header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 18px; }
+.nt-card > header .num { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--brand-2); color: #fff; font-weight: 700; font-size: 14px; }
+.nt-card > header h3 { font-size: 17px; margin: 0; }
+.nt-card > header .sub { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+
+/* provider tiles */
+.nt-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 16px; }
+.nt-tile { min-width: 0; display: flex; flex-direction: column; gap: 14px; padding: 18px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; }
+.nt-tilehead { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.nt-tilehead h4 { margin: 0; font-size: 15px; }
+.nt-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
+.nt-field { min-width: 0; }
+.nt-field.wide { grid-column: 1 / -1; }
+.nt-field > label { margin: 0 0 5px; }
+.nt-field input, .nt-field select { width: 100%; min-width: 0; }
+.nt-field .hint { margin-top: 4px; }
+.nt-help { padding: 9px 12px; font-size: 12.5px; line-height: 1.5; color: var(--note-ink); background: var(--note-bg); border: 1px solid var(--note-line); border-radius: 8px; }
+.nt-test { display: flex; flex-wrap: wrap; gap: 8px; }
+.nt-test input { flex: 1 1 170px; min-width: 0; }
+.nt-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.nt-warn { margin-top: 4px; font-size: 12.5px; color: var(--amber); }
+
+/* "more" sections: closed by default so a beginner only sees what matters */
+.nt-more { border-top: 1px dashed var(--line); padding-top: 12px; }
+.nt-more > summary { cursor: pointer; list-style: none; color: var(--brand-2); font-weight: 600; font-size: 13px; }
+.nt-more > summary::-webkit-details-marker { display: none; }
+.nt-more > summary::before { content: "\25B8"; display: inline-block; width: 16px; }
+.nt-more[open] > summary::before { content: "\25BE"; }
+.nt-moreinner { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
+
+/* chips */
+.nt-chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; background: var(--tag-bg); color: var(--muted); }
+.nt-chip.ok { background: var(--green-soft); color: var(--green); }
+.nt-chip.warn { background: var(--amber-soft); color: var(--amber); }
+
+/* posts */
+.nt-posts { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.nt-post { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(0, 1.7fr) minmax(0, 1.3fr) 72px; gap: 8px 12px; align-items: center; padding: 14px 16px; background: var(--panel); }
+.nt-post + .nt-post { border-top: 1px solid var(--line-soft); }
+.nt-post .who { min-width: 0; }
+.nt-post .who b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-post .who small { color: var(--muted); }
+.nt-post input { width: 100%; min-width: 0; }
+.nt-post .nt-chips { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.nt-empty { padding: 22px; text-align: center; color: var(--muted); }
+.nt-cols { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(0, 1.7fr) minmax(0, 1.3fr) 72px; gap: 12px; padding: 0 16px 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+
+/* on / off switches */
+.nt-switches { display: flex; flex-direction: column; gap: 12px; }
+.nt-switchrow { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 16px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; }
+.nt-switchrow b { font-size: 14.5px; }
+label.nt-switch { position: relative; flex: none; display: inline-block; width: 46px; height: 26px; margin: 0; cursor: pointer; }
+.nt-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 1; }
+.nt-slider { position: absolute; inset: 0; border-radius: 26px; background: var(--track); transition: background .15s; }
+.nt-slider::before { content: ""; position: absolute; left: 3px; top: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .15s; }
+.nt-switch input:checked + .nt-slider { background: var(--green); }
+.nt-switch input:checked + .nt-slider::before { transform: translateX(20px); }
+.nt-switch input:focus-visible + .nt-slider { outline: 2px solid var(--brand-2); outline-offset: 2px; }
+.nt-checks { display: flex; flex-direction: column; gap: 8px; }
+.nt-check { display: flex; align-items: center; gap: 10px; font-weight: 500; font-size: 13.5px; color: var(--ink); margin: 0; }
+.nt-check input { flex: none; width: 16px; height: 16px; padding: 0; }
+.nt-pre { margin: 0; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; }
+
+/* recent messages */
+.nt-log > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-weight: 650; font-size: 16px; }
+.nt-log > summary::-webkit-details-marker { display: none; }
+.nt-log > summary::before { content: "\25B8"; width: 16px; color: var(--brand-2); }
+.nt-log[open] > summary::before { content: "\25BE"; }
+.nt-log > summary .muted { font-weight: 400; font-size: 13px; }
+.nt-logbody { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; }
+.nt-scroll { overflow-x: auto; }
+.nt-scroll td, .nt-scroll th { overflow-wrap: anywhere; }
+.nt-err { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
+
+@media (max-width: 780px) {
+  .nt-steps { grid-template-columns: 1fr; }
+  .nt-form { grid-template-columns: 1fr; }
+  .nt-card { padding: 18px 16px; }
+  .nt-cols { display: none; }
+  .nt-post { grid-template-columns: 1fr; }
+  .nt-post .nt-chips { grid-column: 1; }
+  .nt-post button { justify-self: start; }
+}

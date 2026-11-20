@@ -1,7 +1,12 @@
 /* CMS console - core: DOM helper, API, formatting, dialogs, live stream. Shared through window.C */
 (function () {
   'use strict';
-  const C = window.C = { views: {}, nav: [], S: { token: sessionStorage.getItem('cms_token'), me: null, view: 'dashboard', params: {}, zones: [], posts: [], counts: {}, drawer: null } };
+  // The sign-in is kept in localStorage: it survives closing the tab / restarting the browser, and the server renews it while the console is open.
+  const TOKEN_KEY = 'cms_token';
+  const loadToken = () => { try { return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch (_) { return null; } };
+  const saveToken = (t) => { try { localStorage.setItem(TOKEN_KEY, t); sessionStorage.removeItem(TOKEN_KEY); } catch (_) { try { sessionStorage.setItem(TOKEN_KEY, t); } catch (__) { /* storage blocked */ } } };
+  const clearToken = () => { try { localStorage.removeItem(TOKEN_KEY); } catch (_) { /* blocked */ } try { sessionStorage.removeItem(TOKEN_KEY); } catch (_) { /* blocked */ } };
+  const C = window.C = { saveToken, views: {}, nav: [], S: { token: loadToken(), me: null, view: 'dashboard', params: {}, zones: [], posts: [], counts: {}, drawer: null } };
   const S = C.S;
 
   // ---------- DOM ----------
@@ -98,6 +103,8 @@
       headers: { ...(S.token ? { Authorization: `Bearer ${S.token}` } : {}), ...(opts.body ? { 'Content-Type': 'application/json' } : {}) },
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     });
+    const renewed = res.headers.get('X-Renewed-Token');
+    if (renewed && S.token && res.ok) { S.token = renewed; saveToken(renewed); }
     if (res.status === 401 && S.token && !path.startsWith('/auth/login')) { C.logout('Your session ended - please sign in again.'); throw new Error('session ended'); }
     const ct = res.headers.get('content-type') || '';
     const data = ct.includes('json') ? await res.json().catch(() => null) : null;
@@ -323,7 +330,7 @@
   C.liveStop = () => { LIVE.stopped = true; clearTimeout(LIVE.timer); clearTimeout(LIVE.debounce); if (LIVE.es) { LIVE.es.close(); LIVE.es = null; } };
 
   C.logout = function (message) {
-    sessionStorage.removeItem('cms_token'); S.token = null; S.me = null; C.liveStop(); clearInterval(S.tick);
+    clearToken(); S.token = null; S.me = null; C.liveStop(); clearInterval(S.tick);
     C.renderLogin(message);
   };
 })();

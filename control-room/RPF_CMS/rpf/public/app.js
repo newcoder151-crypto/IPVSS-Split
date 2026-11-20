@@ -24,8 +24,41 @@
   }
 
   // ---------- state ----------------------------------------------------------
+  // The sign-in is kept in localStorage: it survives closing the tab / restarting the browser, and the server renews it while the dashboard is open.
+  const TOKEN_KEY = "rpf_token";
+  const loadToken = () => {
+    try {
+      return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+    } catch (_) {
+      return null;
+    }
+  };
+  const saveToken = (t) => {
+    try {
+      localStorage.setItem(TOKEN_KEY, t);
+      sessionStorage.removeItem(TOKEN_KEY);
+    } catch (_) {
+      try {
+        sessionStorage.setItem(TOKEN_KEY, t);
+      } catch (__) {
+        /* storage blocked */
+      }
+    }
+  };
+  const clearToken = () => {
+    try {
+      localStorage.removeItem(TOKEN_KEY);
+    } catch (_) {
+      /* blocked */
+    }
+    try {
+      sessionStorage.removeItem(TOKEN_KEY);
+    } catch (_) {
+      /* blocked */
+    }
+  };
   const S = {
-    token: sessionStorage.getItem("rpf_token"),
+    token: loadToken(),
     me: null,
     cfg: null,
     cameras: [],
@@ -55,6 +88,11 @@
       data = await res.json();
     } catch (_) {
       /* empty body */
+    }
+    const renewed = res.headers.get("X-Renewed-Token");
+    if (renewed && S.token && res.ok) {
+      S.token = renewed;
+      saveToken(renewed);
     }
     if (
       res.status === 401 &&
@@ -589,7 +627,7 @@
 
   // ---------- login / shell --------------------------------------------------
   function logout(tab) {
-    sessionStorage.removeItem("rpf_token");
+    clearToken();
     S.token = null;
     S.me = null;
     S.watch = null;
@@ -697,7 +735,7 @@
 
   const afterAuth = async (res) => {
     S.token = res.token;
-    sessionStorage.setItem("rpf_token", res.token);
+    saveToken(res.token);
     await start();
   };
 
