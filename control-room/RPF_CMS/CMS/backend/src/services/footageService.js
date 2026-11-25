@@ -55,7 +55,7 @@ async function cutClip(src, dst, startS, endS) {
   const tmp = `${dst}.tmp-${process.pid}`;
   try {
     await run(config.ffmpeg, ['-y', '-v', 'error', '-ss', String(startS), '-i', src, '-t', String(Math.max(0.1, endS - startS)),
-      '-c', 'copy', '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart', '-f', 'mp4', tmp]);
+      '-c', 'copy', '-avoid_negative_ts', 'make_zero', '-fflags', '+bitexact', '-movflags', '+faststart', '-f', 'mp4', tmp]); // +bitexact: no ffmpeg version / date in the file, so the CMS and the post cut byte-identical sections
     if (!fs.existsSync(tmp) || fs.statSync(tmp).size === 0) throw new Error('ffmpeg produced an empty clip');
     fs.renameSync(tmp, dst);
   } catch (e) {

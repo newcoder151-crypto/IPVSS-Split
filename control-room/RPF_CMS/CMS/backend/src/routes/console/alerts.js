@@ -1,4 +1,5 @@
 const express = require('express');
+const incidentTrail = require('../../services/incidentTrail');
 const { pool, withTransaction } = require('../../db');
 const { zoneScope, canSeeZone } = require('../../middleware/auth');
 const { candidatePosts } = require('../../services/routing');
@@ -128,7 +129,12 @@ const INCIDENT_LIST = `
          i.nvr_id, n.name AS nvr_name, n.train_no, i.camera_id, c.name AS camera_name,
          ST_Y(i.location::geometry) AS lat, ST_X(i.location::geometry) AS lon, i.alert_delivery_id,
          (SELECT COUNT(*) FROM train_request r WHERE r.incident_id = i.id OR (i.alert_delivery_id IS NOT NULL AND r.alert_id = (SELECT alert_id FROM alert_delivery WHERE id = i.alert_delivery_id) AND r.post_id = i.post_id)) AS requests,
-         (SELECT COUNT(*) FROM evidence_flag e WHERE e.incident_id = i.id AND e.status = 'active') AS flags
+         (SELECT COUNT(*) FROM evidence_flag e WHERE e.incident_id = i.id AND e.status = 'active') AS flags,
+         (SELECT COUNT(*) FROM delivered_footage f JOIN video_request vr ON vr.id = f.video_request_id WHERE vr.incident_id = i.id OR vr.train_request_id IN (SELECT t.id FROM train_request t WHERE t.incident_id = i.id)) AS footage_files,
+         (SELECT COUNT(*) FROM train_request t WHERE t.incident_id = i.id AND t.status IN ('submitted','approved','awaiting_upload')) AS open_requests,
+         (SELECT COUNT(*) FROM train_request t WHERE t.incident_id = i.id AND t.status = 'submitted') AS requests_to_decide,
+         (SELECT d.sent_at FROM alert_delivery d WHERE d.id = i.alert_delivery_id) AS sent_at,
+         (SELECT d.ack_at FROM alert_delivery d WHERE d.id = i.alert_delivery_id) AS ack_at
     FROM incident i
     JOIN rpf_post po ON po.id = i.post_id
     JOIN users ur ON ur.id = i.raised_by
@@ -172,7 +178,8 @@ router.get('/incidents/:id', wrap(async (req, res) => {
                  WHERE a.entity = 'incident' AND a.entity_id = $1 ORDER BY a.id`, [id]),
     i.alert_delivery_id ? pool.query(`SELECT a.id, a.alert_type, a.priority, a.event_time FROM alert a JOIN alert_delivery d ON d.alert_id = a.id AND d.alert_event_time = a.event_time WHERE d.id = $1`, [i.alert_delivery_id]) : { rows: [] },
   ]);
-  res.json({ incident: { ...i, ...det[0] }, requests: reqs.rows, flags: flags.rows, timeline: notes.rows, alert: alert.rows[0] || null });
+  const trail = await incidentTrail.build(pool, { ...i, ...det[0] }, { scope: 'cms' });
+  res.json({ incident: { ...i, ...det[0] }, requests: reqs.rows, flags: flags.rows, timeline: notes.rows, alert: alert.rows[0] || null, trail });
 }));
 
 router.post('/incidents/:id/note', wrap(async (req, res) => {

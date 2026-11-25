@@ -17,6 +17,6 @@ router.get('/stream', wrap(async (req, res) => {
 const api = express.Router();
 api.use(requireAuth);
 api.post('/stream-ticket', (req, res) => res.json({ ticket: live.issueTicket(req.user) }));
-for (const m of ['dashboard', 'alerts', 'requests', 'evidence', 'fleet', 'admin', 'dev']) api.use('/', require(`./${m}`));
+for (const m of ['dashboard', 'alerts', 'requests', 'evidence', 'fleet', 'notices', 'cluster', 'admin', 'dev']) api.use('/', require(`./${m}`));
 router.use('/', api);
 module.exports = router;

@@ -51,6 +51,7 @@ GRANT UPDATE (status)           ON alert          TO rpf_app;  -- acknowledged /
 GRANT UPDATE (ack_at, ack_by)   ON alert_delivery TO rpf_app;  -- acknowledgement
 GRANT UPDATE (status, closed_at, closed_by, closing_note, updated_at) ON incident TO rpf_app;  -- open -> under_review -> closed
 GRANT UPDATE (local_path, local_sha256, local_size_bytes, local_saved_at, local_error) ON evidence_flag TO rpf_app;  -- RPF records its own local copy
+GRANT UPDATE (ext_status, ext_retention, ext_retain_to, ext_justification, ext_requested_by, ext_requested_at) ON evidence_flag TO rpf_app;  -- RPF asks CMS for a longer retention (CMS decides)
 GRANT UPDATE (read_at, read_by) ON notification TO rpf_app;  -- officer marks notices read
 GRANT UPDATE (status)           ON video_request  TO rpf_app;  -- officer cancels a request (the per-camera requests CMS made for a train)
 GRANT UPDATE (status, updated_at, cameras_open) ON train_request TO rpf_app;  -- officer cancels a request for a whole train

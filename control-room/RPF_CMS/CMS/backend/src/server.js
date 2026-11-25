@@ -74,7 +74,9 @@ function buildApp() {
 
   app.use("/nvr/v1", require("./routes/nvr")); // M-NVR -> CMS
   app.use("/media", require("./routes/console/evidence").media); // token-authenticated footage / evidence
-  app.use("/console/api", require("./routes/console")); // operator / admin console API
+  app.use("/cluster", require("./routes/cluster")); // CMS <-> CMS: health, signed video fetch, join
+  // The console API is never cached by the browser: a cached copy would replay an old X-Renewed-Token header and sign the operator out.
+  app.use("/console/api", (req, res, next) => { res.set("Cache-Control", "no-store"); next(); }, require("./routes/console")); // operator / admin console API
 
   if (config.legacyApi) {
     // original v0.1 endpoints (RPF demo scripts, curl)
@@ -83,7 +85,7 @@ function buildApp() {
     app.use("/api/incidents", legacy.incidents);
   }
 
-  app.use(["/console/api", "/nvr", "/media"], (req, res) =>
+  app.use(["/console/api", "/nvr", "/media", "/cluster"], (req, res) =>
     res.status(404).json({ error: "no such endpoint" }),
   );
   app.use(
@@ -212,6 +214,7 @@ async function main() {
   checkStore();
   setInterval(checkStore, 60000).unref();
   console.log(`CMS footage store (MEDIA_ROOT): ${config.mediaRoot}`);
+  await require("./services/cluster").init().catch((e) => console.warn("cluster init:", e.message));
   jobs.start();
   live.start();
   // React to work the moment it appears (the interval ticks stay as a safety net).

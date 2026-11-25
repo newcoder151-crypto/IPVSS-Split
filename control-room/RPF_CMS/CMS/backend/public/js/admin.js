@@ -1,4 +1,4 @@
-/* CMS console - fleet, map, segments, registry, users, settings, audit */
+/* CMS console - fleet, map, registry, users, settings, audit */
 (function () {
   "use strict";
   const C = window.C;
@@ -218,8 +218,6 @@
   // =========================================================================================
   V.fleet = async () => {
     const rows = await api("/nvrs" + qs({ zone_id: S.params.zone_id }));
-    const removedBox = h("div", {});
-    if (C.isAdmin()) showRemoved(removedBox);
     return h(
       "div",
       {},
@@ -368,72 +366,8 @@
             "No units registered.",
           ),
       ),
-      removedBox,
     );
   };
-  async function showRemoved(box) {
-    let list = [];
-    try {
-      list = await api("/nvrs-removed");
-    } catch (_) {
-      /* not an admin */
-    }
-    box.replaceChildren();
-    if (!list.length) return;
-    box.append(
-      h(
-        "div",
-        { class: "card" },
-        h("h3", {}, `Removed M-NVRs (${list.length})`),
-        h(
-          "div",
-          { class: "muted" },
-          "Deleted by mistake? Restore brings the unit back with its train, cameras and footage. A removed unit that is still running comes back by itself.",
-        ),
-        h(
-          "table",
-          { class: "tbl" },
-          h(
-            "tbody",
-            {},
-            ...list.map((r) =>
-              h(
-                "tr",
-                {},
-                h(
-                  "td",
-                  {},
-                  h("b", {}, r.name),
-                  r.ip ? h("div", { class: "muted" }, r.ip) : null,
-                ),
-                h("td", {}, r.train_no ? `Train ${r.train_no}` : "no train"),
-                h("td", {}, `${r.cameras} cameras`),
-                h(
-                  "td",
-                  {},
-                  h(
-                    "button",
-                    {
-                      class: "btn sm",
-                      onclick: async () => {
-                        await api("/nvrs/" + r.id + "/restore", {
-                          method: "POST",
-                          body: {},
-                        });
-                        C.toast(`${r.name} restored`);
-                        C.refresh();
-                      },
-                    },
-                    "Restore",
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
   function deleteNvr(n) {
     C.confirm(
       `Delete ${n.name}?`,
@@ -801,83 +735,6 @@
       );
     });
   }
-
-  // =========================================================================================
-  // Segments
-  // =========================================================================================
-  V.segments = async () => {
-    const limit = 50;
-    const off = Number(S.params.offset || 0);
-    const d = await api(
-      "/segments" +
-        qs({
-          status: S.params.sstatus,
-          nvr_id: S.params.nvr_id,
-          limit,
-          offset: off,
-          zone_id: S.params.zone_id,
-        }),
-    );
-    return h(
-      "div",
-      {},
-      head(
-        "Stored segments",
-        C.zoneSelect(),
-        h(
-          "select",
-          {
-            onchange: (e) => {
-              S.params.sstatus = e.target.value;
-              S.params.offset = 0;
-              C.refresh();
-            },
-          },
-          h("option", { value: "" }, "Any status"),
-          ["complete", "partial", "pending", "failed"].map((s) =>
-            h("option", { value: s, selected: s === S.params.sstatus }, s),
-          ),
-        ),
-      ),
-      table(
-        [
-          "#",
-          "Unit / camera",
-          "Start",
-          "End",
-          "Size",
-          "Status",
-          "Progress",
-          "SHA-256",
-        ],
-        d.rows.map((s) =>
-          h(
-            "tr",
-            {},
-            h("td", {}, s.id),
-            h("td", {}, `${s.nvr_name} / ${s.camera_name}`),
-            h("td", {}, fmtTime(s.start_time)),
-            h("td", {}, fmtTime(s.end_time)),
-            h("td", {}, fmtSize(s.size_bytes)),
-            h("td", {}, stBadge("seg", s.upload_status)),
-            h(
-              "td",
-              {},
-              s.upload_status === "complete"
-                ? "100%"
-                : `${Math.round((Number(s.bytes_received || 0) / Number(s.size_bytes)) * 100)}%`,
-            ),
-            h("td", { class: "mono muted" }, `${s.sha256.slice(0, 14)}...`),
-          ),
-        ),
-        "No segments.",
-      ),
-      pager(+d.total, limit, off, (o) => {
-        S.params.offset = o;
-        C.refresh();
-      }),
-    );
-  };
 
   // =========================================================================================
   // Registry: zones, posts
@@ -1582,5 +1439,100 @@
         C.refresh();
       }),
     );
+  };
+  // =========================================================================================
+  // Cluster: which CMS exist, which are running, how they are connected (N+1, several locations)
+  // =========================================================================================
+  const NODE_CLS = { online: 'green', degraded: 'amber', offline: 'red', removed: 'grey' };
+  const NODE_TEXT = { online: 'online', degraded: 'online - sync behind', offline: 'OFFLINE', removed: 'removed' };
+  const fmtUp = (s) => (s == null ? '-' : s < 3600 ? `${Math.round(s / 60)} min` : s < 86400 ? `${(s / 3600).toFixed(1)} h` : `${(s / 86400).toFixed(1)} d`);
+  const shortId = (u) => String(u || '').slice(0, 8);
+  V.cluster = async () => {
+    const d = await api('/cluster');
+    const admin = C.isAdmin(); const sup = S.me && S.me.role === 'super_admin';
+    const reload = () => C.refresh();
+    const tile = (text, n, cls, hint) => h('div', { class: `tile static ${cls || ''}`, title: hint || '' }, h('b', {}, n), h('span', {}, text));
+
+    const editSelf = () => C.formDialog({ title: 'This CMS', sub: 'The name and place other CMS and the people at the posts see. Other fields are set by the cluster.', submitLabel: 'Save',
+      fields: [
+        { name: 'name', label: 'Name', value: (d.nodes.find((n) => n.is_me) || {}).name || '' },
+        { name: 'location', label: 'Location (city / control room)', value: (d.nodes.find((n) => n.is_me) || {}).location || '' },
+        { name: 'url', label: 'Address other CMS use to reach this one', value: (d.nodes.find((n) => n.is_me) || {}).url || '', placeholder: 'http://10.1.2.3:7080' },
+        { name: 'role', label: 'Role', type: 'select', value: (d.nodes.find((n) => n.is_me) || {}).role || 'active', options: [{ value: 'active', label: 'Active - has M-NVRs and posts connected' }, { value: 'standby', label: 'Standby - the spare (N+1), takes over when another CMS fails' }] },
+      ],
+      submit: async (v) => { await api('/cluster/self', { method: 'PATCH', body: v }); toast('Saved'); reload(); } });
+
+    const addCms = async () => {
+      let j; try { j = await api('/cluster/join-info'); } catch (e) { toast(e.message); return; }
+      const cmd = `node scripts/cluster.js join --seed ${j.seed_url || 'http://THIS-CMS:7080'} \\\n  --seed-db "host=THIS-DB-HOST port=5432 dbname=cms user=cms_repl password=..." \\\n  --seed-admin-db "host=THIS-DB-HOST port=5432 dbname=cms user=cms password=..." \\\n  --my-db "host=NEW-DB-HOST port=5432 dbname=cms user=cms_repl password=..." \\\n  --name "New CMS" --location "City" --url http://NEW-HOST:7080`;
+      const { close } = C.dialog({ title: 'Add a CMS to the cluster', wide: true, sub: 'On the NEW computer (empty database, schema only):', body: h('div', {},
+        h('ol', { class: 'steps' },
+          h('li', {}, 'Install the CMS there and run  cluster/prepare-db.sh  on its PostgreSQL (wal_level=logical and a replication account). Do the same here if it was not done.'),
+          h('li', {}, ['Put the cluster secret in its .env as ', h('code', {}, 'CMS_CLUSTER_SECRET'), sup && j.secret ? [': ', h('code', { class: 'mono' }, j.secret), ' ', h('button', { class: 'btn sm', onclick: () => C.copyText(j.secret) }, 'Copy')] : ' (a super administrator can see it here)']),
+          h('li', {}, 'Run this on the new computer:'),
+        ),
+        h('pre', { class: 'cmd' }, cmd),
+        h('div', { class: 'muted' }, 'It gets its own node number and its own range of ids, copies everything the cluster holds, and is connected in both directions. With more than two CMS every CMS must also be linked to every other one (node scripts/cluster.js peer ...).'),
+        h('div', { class: 'foot' }, h('button', { class: 'btn', onclick: () => close() }, 'Close'))) });
+    };
+
+    const connect = (n) => C.formDialog({ title: `Receive data from ${n.name}`, submitLabel: 'Connect',
+      sub: 'Connects THIS database to the database of that CMS (one direction). The other CMS must do the same towards this one.',
+      fields: [{ name: 'host', label: 'Database host of that CMS', placeholder: '10.1.2.3' }, { name: 'port', label: 'Port', value: '5432', type: 'number' }, { name: 'dbname', label: 'Database name', value: 'cms' }, { name: 'user', label: 'Replication account', value: 'cms_repl' }, { name: 'password', label: 'Password', type: 'password' },
+        { name: 'copy_data', label: 'First copy everything it holds', type: 'select', value: 'false', options: [{ value: 'false', label: 'No - only new changes (both already hold the data)' }, { value: 'true', label: 'Yes - this database is empty' }] }],
+      submit: async (v) => { await api('/cluster/replication/subscribe', { method: 'POST', body: { ...v, copy_data: v.copy_data === 'true', node_uuid: n.node_uuid } }); toast('Connected'); reload(); } });
+
+    const removeNode = (n) => C.formDialog({ title: `Remove ${n.name} from the cluster`, danger: true, submitLabel: 'Remove',
+      sub: 'Do this for a CMS that has been retired for good. Its data stays everywhere; its M-NVRs and posts must be pointed at another CMS.', fields: [{ name: 'force', label: 'It is still online - remove anyway', type: 'select', value: 'false', options: [{ value: 'false', label: 'No (refuse if it is online)' }, { value: 'true', label: 'Yes' }] }],
+      submit: async (v) => { await api(`/cluster/nodes/${n.node_uuid}/remove`, { method: 'POST', body: { force: v.force === 'true' } }); toast('Removed'); reload(); } });
+
+    if (!d.clustered) {
+      return h('div', {}, head('Cluster'),
+        h('div', { class: 'card pad' }, h('h3', {}, 'This CMS runs on its own'),
+          h('p', {}, 'Several CMS can work together: for N+1 redundancy (a spare takes over when one fails), or one per location. They share all data, every CMS can play the video of every other CMS, and archived evidence is copied between them.'),
+          h('p', {}, 'To start a cluster, run on this computer:'), h('pre', { class: 'cmd' }, 'node scripts/cluster.js create --name "Delhi CMS" --location "Delhi" --url http://THIS-HOST:7080'),
+          h('p', { class: 'muted' }, 'It stays a single CMS until you add another one. Nothing changes for the people using it.')));
+    }
+
+    const me = d.nodes.find((n) => n.is_me);
+    const live = d.nodes.filter((n) => n.status !== 'removed');
+    const subsBad = (d.replication && d.replication.subscriptions || []).filter((s) => !s.pid || +s.errors > 0 || +s.tables_syncing > 0);
+    const tiles = h('div', { class: 'tiles' },
+      tile('CMS in the cluster', d.summary.nodes, ''),
+      tile('Online', d.summary.online, 'green'),
+      tile('Offline', d.summary.offline, d.summary.offline ? 'red' : ''),
+      tile('N+1 redundancy', d.summary.redundant ? 'Yes' : 'NO', d.summary.redundant ? 'green' : 'red', d.summary.redundant ? 'Another CMS is running that can take over' : 'Only one CMS is running: if it fails nobody takes over'),
+      tile('Data sync', subsBad.length ? `${subsBad.length} problem${subsBad.length === 1 ? '' : 's'}` : 'OK', subsBad.length ? 'amber' : 'green'));
+
+    const nodeRow = (n) => h('tr', { class: n.status === 'offline' ? 'down' : '' },
+      h('td', {}, h('strong', {}, n.name), n.is_me ? [' ', badge('this CMS', 'blue')] : null, h('div', { class: 'muted' }, `node ${n.node_no} - ${shortId(n.node_uuid)}`), h('div', { class: 'muted' }, n.role === 'standby' ? 'standby (spare)' : 'active')),
+      h('td', {}, n.location || h('span', { class: 'muted' }, '-'), n.url ? h('div', { class: 'muted' }, h('a', { href: `${n.url}/console/`, target: '_blank', rel: 'noopener' }, n.url)) : null),
+      h('td', {}, badge(NODE_TEXT[n.status], NODE_CLS[n.status]), n.status === 'offline' && n.error ? h('div', { class: 'muted' }, ({ ECONNREFUSED: 'not running, or its port is blocked', 'no answer (timed out)': 'no answer - powered off or unreachable', EHOSTUNREACH: 'computer unreachable', ENOTFOUND: 'address not found' })[n.error] || n.error) : null,
+        h('div', { class: 'muted' }, n.is_me ? 'this computer' : n.rtt_ms != null ? `answers in ${n.rtt_ms} ms` : 'no answer yet'),
+        Math.abs(n.skew_ms || 0) > 5000 ? h('div', { class: 'warnline' }, `clock is ${Math.round(n.skew_ms / 1000)} s off`) : null),
+      h('td', { class: 'muted' }, n.seen_age_s == null ? 'never' : `${n.seen_age_s} s ago`, h('div', {}, `v${n.version || '?'}`), h('div', {}, `up ${fmtUp((n.stats || {}).uptime_s)}`)),
+      h('td', {}, (n.stats || {}).nvrs != null ? [`${n.stats.nvrs_online}/${n.stats.nvrs} M-NVRs online`, h('div', { class: 'muted' }, 'connected to this CMS')] : '-'),
+      h('td', {}, (n.stats || {}).open_alerts != null ? [`${n.stats.open_alerts} open alerts`, h('div', { class: 'muted' }, `${n.stats.open_incidents} incidents, ${n.stats.evidence} evidence it archived`)] : '-'),
+      h('td', {}, (n.stats || {}).disk ? [`${n.stats.disk.free_gb} GB free`, h('div', { class: 'muted' }, `of ${n.stats.disk.total_gb} GB`)] : h('span', { class: 'muted' }, '-'), (n.stats || {}).footage != null ? h('div', { class: 'muted' }, `${n.stats.footage} recordings on its disk`) : null),
+      h('td', { class: 'nowrap' }, n.is_me ? (admin ? h('button', { class: 'btn sm', onclick: editSelf }, 'Edit') : null)
+        : [n.status !== 'removed' && sup ? h('button', { class: 'btn sm', onclick: () => connect(n) }, 'Connect data') : null, ' ', n.status !== 'removed' && admin ? h('button', { class: 'btn sm danger', onclick: () => removeNode(n) }, 'Remove') : null,
+          n.status === 'removed' && admin ? h('button', { class: 'btn sm', onclick: async () => { await api(`/cluster/nodes/${n.node_uuid}/restore`, { method: 'POST', body: {} }); reload(); } }, 'Restore') : null]));
+
+    const rep = d.replication || {};
+    const repTable = h('div', {}, table(['Receives from', 'State', 'Last message', 'Tables', 'Errors'],
+      (rep.subscriptions || []).map((s) => h('tr', {}, h('td', {}, s.subname, h('div', { class: 'muted mono' }, s.conninfo)), h('td', {}, s.pid ? badge('running', 'green') : badge('NOT running', 'red')), h('td', { class: 'muted' }, s.last_msg_receipt_time ? C.ago(s.last_msg_receipt_time) : '-'), h('td', {}, +s.tables_syncing ? `${s.tables_syncing} still copying` : 'in sync'), h('td', {}, +s.errors ? badge(`${s.errors}`, 'red') : '0'))),
+      'This CMS does not receive data from any other CMS yet.'),
+      (rep.slots || []).length ? h('div', { class: 'muted mt' }, 'Sending to: ', rep.slots.map((s) => `${s.slot_name} ${s.active ? 'connected' : 'NOT connected'}, ${s.lag_bytes > 1048576 ? `${Math.round(s.lag_bytes / 1048576)} MB behind` : 'up to date'}`).join(' - ')) : null,
+      h('div', { class: 'muted mt' }, `PostgreSQL wal_level = ${rep.wal_level}${rep.wal_level !== 'logical' ? ' - must be "logical" for the CMS to share data (run cluster/prepare-db.sh and restart PostgreSQL)' : ''}. ${rep.publication ? `Sharing ${rep.publication.tables} tables.` : 'Nothing is published yet.'}`));
+
+    return h('div', {},
+      head('Cluster', h('button', { class: 'btn', onclick: async () => { await api('/cluster/probe', { method: 'POST', body: {} }); toast('Checked'); reload(); } }, C.ic('activity', 14), 'Check now'), admin ? h('button', { class: 'btn primary', onclick: addCms }, C.ic('plus', 14), 'Add a CMS') : null),
+      h('div', { class: 'muted mb' }, `You are on ${me ? me.name : 'this CMS'}${me && me.location ? ` (${me.location})` : ''}, node ${d.self.node_no} of the cluster. Every CMS has its own range of record numbers, so a number tells which CMS made it. Video stays on the CMS that recorded it and is streamed to the others when someone plays it; archived evidence is copied to every CMS.`),
+      tiles,
+      !d.summary.redundant ? h('div', { class: 'banner bad' }, 'Only one CMS is running. If it fails, nobody takes over its alerts and notifications. Start another CMS (or check why it is offline).') : null,
+      h('div', { class: 'card pad' }, h('h3', {}, 'CMS in the cluster'),
+        table(['CMS', 'Location / address', 'Status', 'Last heartbeat', 'M-NVRs', 'Work of this CMS', 'Storage', ''], live.concat(d.nodes.filter((n) => n.status === 'removed')).map(nodeRow), 'No CMS.')),
+      h('div', { class: 'card pad' }, h('h3', {}, 'Data sync between the databases'), repTable),
+      h('div', { class: 'card pad' }, h('h3', {}, 'What happened'), d.events.length ? h('div', { class: 'tl' }, d.events.map((e) => h('div', { class: `tev ${e.kind === 'down' ? 'bad' : e.kind === 'up' || e.kind === 'join' ? 'done' : e.kind === 'takeover' ? 'warn' : ''}` }, h('i', { class: 'td system' }, C.ic(e.kind === 'down' ? 'alert' : e.kind === 'takeover' ? 'zap' : 'check', 12)), h('div', { class: 'tb' }, h('b', {}, e.message), h('div', { class: 'muted tm' }, `${fmtTime(e.at)} - ${e.kind}`))))) : h('div', { class: 'muted' }, 'Nothing yet.')));
   };
 })();

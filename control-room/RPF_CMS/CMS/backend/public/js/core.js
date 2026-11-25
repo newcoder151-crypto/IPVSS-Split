@@ -4,6 +4,7 @@
   // The sign-in is kept in localStorage: it survives closing the tab / restarting the browser, and the server renews it while the console is open.
   const TOKEN_KEY = 'cms_token';
   const loadToken = () => { try { return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch (_) { return null; } };
+  const jwtIat = (t) => { try { return JSON.parse(atob(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).iat || 0; } catch (_) { return 0; } };
   const saveToken = (t) => { try { localStorage.setItem(TOKEN_KEY, t); sessionStorage.removeItem(TOKEN_KEY); } catch (_) { try { sessionStorage.setItem(TOKEN_KEY, t); } catch (__) { /* storage blocked */ } } };
   const clearToken = () => { try { localStorage.removeItem(TOKEN_KEY); } catch (_) { /* blocked */ } try { sessionStorage.removeItem(TOKEN_KEY); } catch (_) { /* blocked */ } };
   const C = window.C = { saveToken, views: {}, nav: [], S: { token: loadToken(), me: null, view: 'dashboard', params: {}, zones: [], posts: [], counts: {}, drawer: null } };
@@ -104,7 +105,8 @@
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     });
     const renewed = res.headers.get('X-Renewed-Token');
-    if (renewed && S.token && res.ok) { S.token = renewed; saveToken(renewed); }
+    // only ever swap to a NEWER token: a stale copy of an old one (cache, proxy, a slow reply) must never replace the current one
+    if (renewed && S.token && res.ok && jwtIat(renewed) >= jwtIat(S.token)) { S.token = renewed; saveToken(renewed); }
     if (res.status === 401 && S.token && !path.startsWith('/auth/login')) { C.logout('Your session ended - please sign in again.'); throw new Error('session ended'); }
     const ct = res.headers.get('content-type') || '';
     const data = ct.includes('json') ? await res.json().catch(() => null) : null;
@@ -265,6 +267,66 @@
     const clear = active ? h('button', { class: 'btn sm', type: 'button', onclick: () => { items.forEach((f) => delete S.params[f.key]); delete S.params.sort; reload(); } }, C.ic('x', 13), 'Clear filters') : null;
     return h('div', { class: 'filterbar' }, controls, sortSel, clear);
   };
+  // ---------- search by DATE and TRAIN NUMBER (the server does the searching, so it covers every record, not just one page) ----------
+  const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  /** Query parts for /footage and /evidence: the browser turns the operator's calendar days into exact timestamps. */
+  C.dateParams = function () {
+    const P = S.params;
+    let a = P.dfrom ? new Date(`${P.dfrom}T00:00:00`) : null; let b = P.dto ? new Date(`${P.dto}T00:00:00`) : null;
+    if (a && b && a > b) [a, b] = [b, a];
+    return { from: a ? a.toISOString() : '', to: b ? new Date(b.getFullYear(), b.getMonth(), b.getDate() + 1).toISOString() : '', train_no: (P.dtrain || '').trim(), date_by: P.dby || '' }; // the "to" day is included
+  };
+  /** A train number (exact) and a date range with real date pickers, plus quick ranges. by = what the dates are about (recorded / delivered / flagged). */
+  C.dateTrainBar = function ({ trains, by, id }) {
+    const P = S.params; const reload = () => { P.offset = 0; C.refresh(); };
+    const active = !!(P.dfrom || P.dto || (P.dtrain || '').trim());
+    const listId = `${id || 'x'}-trains`;
+    const dateIn = (key, text) => h('label', { class: 'fsel' }, h('span', {}, text),
+      h('input', { type: 'date', value: P[key] || '', max: key === 'dfrom' && P.dto ? P.dto : undefined, min: key === 'dto' && P.dfrom ? P.dfrom : undefined, onchange: (e) => { P[key] = e.target.value; reload(); } }));
+    const quick = (text, days) => h('button', { class: `btn sm ${P.dto === ymd(new Date()) && P.dfrom === ymd(new Date(Date.now() - days * 86400000)) ? 'primary' : ''}`, type: 'button',
+      onclick: () => { P.dfrom = ymd(new Date(Date.now() - days * 86400000)); P.dto = ymd(new Date()); reload(); } }, text);
+    return h('div', { class: 'filterbar searchbar' },
+      h('label', { class: 'fsel grow' }, h('span', {}, 'Train number (exact)'),
+        h('input', { class: 'fsearch', type: 'search', list: listId, autocomplete: 'off', placeholder: 'e.g. 12301', 'aria-label': 'Train number', value: P.dtrain || '', onchange: (e) => { P.dtrain = e.target.value; reload(); } })),
+      h('datalist', { id: listId }, (trains || []).map((t) => h('option', { value: String(t).split(' ')[0] }, t))),
+      by ? h('label', { class: 'fsel' }, h('span', {}, 'Date of'), h('select', { onchange: (e) => { P.dby = e.target.value; if (P.dfrom || P.dto) reload(); } }, by.map(([v, t]) => h('option', { value: v, selected: v === (P.dby || by[0][0]) }, t)))) : null,
+      dateIn('dfrom', 'From date'), dateIn('dto', 'To date'),
+      h('div', { class: 'quick' }, quick('Today', 0), quick('7 days', 6), quick('30 days', 29)),
+      active ? h('button', { class: 'btn sm', type: 'button', onclick: () => { delete P.dfrom; delete P.dto; delete P.dtrain; reload(); } }, C.ic('x', 13), 'Reset search') : null);
+  };
+
+  // ---------- retention helpers: days left, SHA-256, copy, CSV ----------
+  C.keptChip = (f) => {
+    if (f.status && f.status !== 'active') return C.badge(f.status, 'grey');
+    if (f.retention === 'permanent') return C.badge('kept for life', 'indigo');
+    const d = f.days_left;
+    if (d == null) return C.badge('timed', 'blue');
+    return C.badge(d <= 0 ? 'ending now' : d === 1 ? '1 day left' : `${d} days left`, d <= 7 ? 'red' : d <= 30 ? 'amber' : 'green');
+  };
+  C.endText = (f) => (f.retention === 'permanent' ? 'for life' : `until ${C.fmtDate(f.retain_to)}`);
+  /** Works on http:// too (navigator.clipboard needs https or localhost). */
+  C.copyText = async function (text) {
+    try { await navigator.clipboard.writeText(text); } catch (_) {
+      const ta = h('textarea', { style: 'position:fixed;opacity:0' }, text); document.body.append(ta); ta.select();
+      try { document.execCommand('copy'); } catch (__) { /* nothing more to try */ }
+      ta.remove();
+    }
+    C.toast('Checksum copied');
+  };
+  C.shaLine = (text, sha, full) => (sha ? h('div', { class: 'shaline' }, h('span', { class: 'muted' }, `${text} `), h('code', { class: full ? 'mono' : 'mono short', title: sha }, full ? sha : `${sha.slice(0, 10)}...${sha.slice(-6)}`),
+    h('button', { class: 'btn sm', type: 'button', title: 'Copy the full SHA-256', onclick: (e) => { e.stopPropagation(); C.copyText(sha); } }, 'Copy')) : null);
+  C.extStatus = (f) => {
+    if (f.ext_status === 'pending') return [C.badge('extension pending', 'amber'), h('div', { class: 'muted' }, `asked ${f.ext_retention === 'permanent' ? 'for life' : `until ${C.fmtDate(f.ext_retain_to)}`} by ${f.ext_requested_by_username || 'the post'}`)];
+    if (f.ext_status === 'rejected') return [C.badge('extension rejected', 'red'), f.ext_decision_note ? h('div', { class: 'muted' }, f.ext_decision_note) : null];
+    if (f.ext_status === 'approved') return [C.badge('extended', 'green'), h('div', { class: 'muted' }, `${C.fmtDate(f.ext_decided_at)}${f.ext_decided_by_username ? ` by ${f.ext_decided_by_username}` : ''}`)];
+    return h('span', { class: 'muted' }, '-');
+  };
+  C.downloadCsv = function (filename, header, rows) {
+    const esc = (v) => { const s = v == null ? '' : String(v); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const url = URL.createObjectURL(new Blob(['\ufeff' + [header, ...rows].map((r) => r.map(esc).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }));
+    const a = h('a', { href: url, download: filename }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+
   C.zoneSelect = () => (C.isSuper() ? h('select', { onchange: (e) => { S.params.zone_id = e.target.value; C.refresh(); } }, h('option', { value: '' }, 'All zones'), S.zones.map((z) => h('option', { value: z.id, selected: String(z.id) === String(S.params.zone_id) }, z.name))) : null);
   C.mapLink = (lat, lon) => (lat == null ? '-' : h('a', { href: `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=15/${lat}/${lon}`, target: '_blank', rel: 'noopener noreferrer' }, `${Number(lat).toFixed(5)}, ${Number(lon).toFixed(5)}`));
   C.download = (url) => { const a = h('a', { href: url, download: '' }); document.body.append(a); a.click(); a.remove(); };
@@ -303,7 +365,7 @@
     });
     const foot = h('div', { class: 'foot' });
     const { close } = C.dialog({ title, wide: true, body: [h('div', { class: 'muted' }, meta), video, problem, foot], onClose: () => video.pause() });
-    foot.append(extraButtons || null, h('button', { class: 'btn', onclick: close }, 'Close'));
+    foot.append(...[extraButtons, h('button', { class: 'btn', onclick: close }, 'Close')].filter(Boolean));
   };
 
   // ---------- live stream (SSE) ----------

@@ -1,6 +1,7 @@
 require("dotenv").config();
 const path = require("path");
 const crypto = require("crypto");
+const fs = require("fs");
 
 const int = (name, dflt) => {
   const v = Number(process.env[name]);
@@ -10,11 +11,36 @@ const int = (name, dflt) => {
 const str = (name) => String(process.env[name] || "").trim();
 const flag = (name) => ["1", "true", "yes", "on"].includes(str(name).toLowerCase());
 
+// Session hours: 0 (the default) = a console session never expires. A positive number = hours (renewed while the console is in use).
+const hours = (name, dflt) => {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === "") return dflt;
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 0 ? v : dflt;
+};
+
 let jwtSecret = process.env.CMS_JWT_SECRET || process.env.JWT_SECRET || "";
 let ephemeralSecret = false;
 if (jwtSecret.length < 32) {
-  jwtSecret = crypto.randomBytes(48).toString("hex");
-  ephemeralSecret = true;
+  // No secret configured: generate one ONCE and keep it in a file, so a restart does not log everybody out.
+  const secretFile = path.resolve(
+    process.env.JWT_SECRET_FILE || path.join(__dirname, "..", "..", "data", "jwt-secret"),
+  );
+  try {
+    const saved = fs.readFileSync(secretFile, "utf8").trim();
+    if (saved.length >= 32) jwtSecret = saved;
+  } catch (_) {
+    /* first start: no file yet */
+  }
+  if (jwtSecret.length < 32) {
+    jwtSecret = crypto.randomBytes(48).toString("hex");
+    try {
+      fs.mkdirSync(path.dirname(secretFile), { recursive: true });
+      fs.writeFileSync(secretFile, jwtSecret + "\n", { mode: 0o600 });
+    } catch (_) {
+      ephemeralSecret = true; // folder not writable: sessions end at restart (warned at start-up)
+    }
+  }
 }
 
 module.exports = {
@@ -33,7 +59,7 @@ module.exports = {
   },
   jwtSecret,
   ephemeralSecret,
-  sessionHours: int("SESSION_HOURS", 8),
+  sessionHours: hours("SESSION_LIMIT_HOURS", 0), // 0 = never expires; the old SESSION_HOURS setting is ignored on purpose
   // Footage store (object-storage stand-in). Shared with the RPF server, which reads delivered
   // footage and archived clips from the same root.
   mediaRoot: path.resolve(

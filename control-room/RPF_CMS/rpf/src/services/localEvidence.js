@@ -135,4 +135,20 @@ async function finalize(tmp, flag, meta) {
   return { rel, sha256, size };
 }
 
-module.exports = { prepare, finalize, discard, localAbs, exists };
+/** Replace the local copy by a verified copy of `from` (written beside it, then moved into place) and return its SHA-256. */
+async function replaceLocal(dst, from) {
+  const tmp = `${dst}.repair-${process.pid}`;
+  fs.copyFileSync(from, tmp);
+  fs.renameSync(tmp, dst);
+  const sha = await sha256File(dst);
+  try {
+    const side = dst.replace(/\.mp4$/, ".json");
+    const meta = JSON.parse(fs.readFileSync(side, "utf8"));
+    fs.writeFileSync(side, JSON.stringify({ ...meta, sha256: sha, size_bytes: fs.statSync(dst).size, repaired_at: new Date().toISOString() }, null, 2));
+  } catch (_) {
+    /* the side-car is a courtesy */
+  }
+  return sha;
+}
+
+module.exports = { prepare, finalize, discard, localAbs, exists, sha256File, replaceLocal };

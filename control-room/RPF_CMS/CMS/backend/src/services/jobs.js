@@ -43,6 +43,12 @@ const JOBS = [
     label: "Retention: 30-day FIFO on raw segments, expire timed flags",
   },
   {
+    name: "retention_reminders",
+    every: 3600,
+    fn: async () => `${await require("./retentionService").remindExpiring()} expiry reminder(s) sent`,
+    label: "Evidence: remind the post and CMS when a retention is about to end (30 / 7 / 1 day)",
+  },
+  {
     name: "partitions",
     every: 86400,
     fn: async () =>

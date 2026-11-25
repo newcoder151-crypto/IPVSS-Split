@@ -1,0 +1,39 @@
+UPDATE: several CMS working together (N+1 redundancy, several locations) + video of every CMS available on all
+===========================================================================================================
+Only the changed / new files (same folder structure as IPVSS-Split-main). Apply over the previous update.
+FULL GUIDE: control-room/cluster/CLUSTER.md  (read it before building a cluster)
+
+HOW TO APPLY (each CMS computer)
+  1. Stop the control room.  2. Copy this zip into the folder that CONTAINS IPVSS-Split-main, then:  unzip -o <this zip>
+  3. Start again (migration 011_cluster.sql runs by itself: 4 small tables, some functions, 1 column nvr_unit.home_node; safe to repeat).
+  4. Ctrl+F5 once in the CMS console and in the RPF dashboard.
+A CMS that is NOT put in a cluster behaves exactly as before. The new "Cluster" tab then just says it runs on its own.
+
+WHAT YOU GET
+  * Unique id per CMS: node number + uuid + name/location/address; every CMS makes record numbers in its OWN range (node N: N x 1,000,000,000),
+    so rows from different CMS never collide and a number tells which CMS made it.
+  * Data sync: PostgreSQL logical replication, every CMS database to every other (both ways). All 26 shared tables: alerts, incidents,
+    requests, evidence, users, settings, audit trail, GPS ... A location keeps working if the link to the others is down, and catches up.
+  * CLUSTER TAB (CMS console, Administration): every CMS with status (online / offline / sync behind), heartbeat, address, what it is
+    working on (M-NVRs, alerts, evidence, recordings, free disk), N+1 yes/no, data-sync health, and a log of what happened (down, up,
+    take-over, joined). Rename a CMS, add one (shows the join command and the secret), remove a retired one. The menu shows how many are down.
+  * N+1: when a CMS stops, the lowest-numbered CMS that is alive takes over its alert escalation / e-mail-SMS / reminder work.
+    Work that needs the video files stays with the CMS that holds them. Each background job now knows which CMS does it (no doubles).
+  * VIDEO OF ONE CMS ON ALL: when someone plays or downloads a recording that is on another CMS, their own CMS streams it from there
+    (seeking works, checksum header kept). A clear message says which CMS is offline when it is. Posts (RPF) can play it too.
+  * EVIDENCE N+1: every archived evidence clip is copied to every other CMS, checked against its SHA-256, and removed when the flag is
+    released - evidence is still playable when the CMS that archived it is down.
+  * POSTS: DB_HOST in the RPF .env may list several CMS databases (10.1.1.10,10.2.2.20): it switches by itself when one stops answering.
+  * Tools: control-room/cluster/prepare-db.sh (PostgreSQL ready for replication), CMS/backend/scripts/cluster.js (create | join | peer | status).
+
+TO BUILD A CLUSTER (short version - details in CLUSTER.md)
+  1. Every computer:  sudo -u postgres bash control-room/cluster/prepare-db.sh --allow <network>   then restart PostgreSQL once. (PostgreSQL 16+)
+  2. First CMS (the one with your data):  node scripts/cluster.js create --name "Delhi CMS" --location "Delhi" --url http://<its address>:7080
+     -> prints the cluster secret: put it in CMS_CLUSTER_SECRET (and CMS_PUBLIC_URL) in that CMS's .env.
+  3. Each new computer (empty database): put the same secret in its .env, then  node scripts/cluster.js join --seed ... (see CLUSTER.md).
+  4. With more than two CMS also link every pair:  node scripts/cluster.js peer ...
+
+GOOD TO KNOW
+  * Unique things created at the same moment on two CMS (the same user name or zone name) conflict - the Cluster tab shows errors on that
+    link until one is renamed. Sessions are per CMS (sign in again on another). Keep clocks in sync (NTP). Update every CMS to the same version.
+  * M-NVRs talk to one CMS; the CMS they are connected to is recorded and their footage work follows it.

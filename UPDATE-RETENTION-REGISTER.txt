@@ -1,0 +1,31 @@
+UPDATE: search by date + train, retention register, longer-retention requests, retention timeline at flag time
+==============================================================================================================
+
+This zip holds ONLY the files that changed or are new (same folder structure as IPVSS-Split-main). It is not a complete package.
+It is built on top of the UPDATE-ALERT-CHANNELS version (e-mail & SMS page untouched).
+
+HOW TO APPLY (control-room PC, no internet needed)
+  1. Stop the control room.
+  2. Copy this zip into the folder that CONTAINS IPVSS-Split-main (the parent), then:  unzip -o <this zip>
+  3. Start again. The database is updated automatically on start (new migration 009_retention_extension.sql:
+     9 nullable columns on evidence_flag, no new table; safe to run more than once).
+  4. Press Ctrl+F5 once in the CMS console and in the RPF dashboard.
+
+WHAT YOU GET
+  RPF + CMS  Footage and Evidence lists: search by TRAIN NUMBER and by DATES (Today / Yesterday / 7 / 30 days / pick From-To).
+             "Date of" chooses what the dates mean (Recorded, Delivered, Flagged). The server searches everything, not just the screen.
+  RPF + CMS  New list: Retention (RPF) / Retention register (CMS) - every recording kept beyond 30 days with train, camera, recording
+             time, section, size, SHA-256 (CMS archive copy / local copy / delivered file, with Copy button), kept-until date and
+             DAYS LEFT, where it is stored, justification, who flagged it, and the state of any longer-retention request. Export CSV.
+             The search box also finds a recording by a SHA-256 (or its first characters).
+  RPF        Flagging footage now asks HOW LONG: for a number of days / until a date / for life, plus the justification.
+  RPF        "Extend" on a retained recording asks CMS for longer: add N days, until a new date, or for life, with a justification.
+  CMS        A request shows on "Retention register" (menu badge + pop-up). A zone admin / super admin APPROVES (as asked, or with a
+             different end), or REJECTS with a reason, or extends directly with a justification. Every step is in the audit trail and
+             the post gets a notice. (Operators can see the register but not decide.)
+  Also       Session never expires (SESSION_HOURS=0 default) - the files from the earlier session update that were missing are included.
+
+NOTES
+  - Only the CURRENT/last request is kept on the flag; the history is in the audit trail (chain of custody).
+  - A timed retention that ends before CMS decides is released as before; its pending request is closed automatically.
+  - Optional least-privilege RPF role: re-run rpf/sql/rpf_app_role.sql (migration 009 grants the new columns itself if the role exists).

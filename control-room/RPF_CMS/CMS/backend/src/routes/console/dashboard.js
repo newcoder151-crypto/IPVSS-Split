@@ -163,8 +163,7 @@ router.get(
       attention.push({
         level: "amber",
         text: `${segs.failed} segment upload(s) failed verification`,
-        view: "segments",
-        params: { status: "failed" },
+        view: "fleet",
       });
     const stuck = await many(
       `SELECT DISTINCT n.name FROM video_request r JOIN camera c ON c.id = r.camera_id JOIN nvr_unit n ON n.id = c.nvr_id JOIN rpf_post po ON po.id = r.post_id
@@ -243,7 +242,31 @@ router.get(
         p,
       )
     ).rows[0];
+    p = [];
+    const x = (
+      await pool.query(
+        `SELECT COUNT(*) AS pending FROM evidence_flag e JOIN delivered_footage f ON f.id = e.footage_id JOIN video_request r ON r.id = f.video_request_id JOIN rpf_post po ON po.id = r.post_id WHERE e.ext_status = 'pending' AND e.status = 'active' AND ${zoneScope(req.user, "po.zone_id", p, req.query.zone_id)}`,
+        p,
+      )
+    ).rows[0];
+    p = [];
+    const nt = (
+      await pool.query(
+        `SELECT COUNT(*) AS unread, COALESCE(MAX(n.id), 0) AS last FROM console_notice n WHERE n.read_at IS NULL AND ${zoneScope(req.user, "n.zone_id", p, req.query.zone_id)}`,
+        p,
+      )
+    ).rows[0];
+    let clusterDown = 0;
+    try {
+      clusterDown = +(await pool.query(`SELECT COUNT(*) AS n FROM cms_node WHERE removed_at IS NULL AND NOT cms_node_alive(node_no) AND EXISTS (SELECT 1 FROM cms_cluster_config)`)).rows[0].n;
+    } catch (_) {
+      /* not clustered */
+    }
     res.json({
+      cluster_down: clusterDown,
+      notices_unread: +nt.unread,
+      notices_last: +nt.last,
+      ext_pending: +x.pending,
       queue: +a.queue,
       escalated: +a.escalated,
       unacked: +a.unacked,

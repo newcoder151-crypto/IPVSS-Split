@@ -62,7 +62,12 @@ function buildApp() {
   });
 
   app.use("/api/setup", require("./routes/setup")); // first-run post registration (public, only while unbound)
-  app.use("/api/auth", require("./routes/auth"));
+  // The API is never cached by the browser: a cached copy would replay an old X-Renewed-Token header and sign the officer out.
+  const noStore = (req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    next();
+  };
+  app.use("/api/auth", noStore, require("./routes/auth"));
   app.use("/api/media", require("./routes/media")); // token-authenticated, no bearer
   // Live stream. EventSource cannot send headers, so the browser first trades its session for a 60 s ticket.
   const live = require("./services/live");
@@ -86,7 +91,7 @@ function buildApp() {
   );
 
   const api = express.Router();
-  api.use(requireAuth);
+  api.use(noStore, requireAuth);
   api.post("/stream-ticket", (req, res) =>
     res.json({ ticket: live.issueTicket(req.user) }),
   );

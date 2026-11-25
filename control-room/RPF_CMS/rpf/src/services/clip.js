@@ -86,6 +86,8 @@ async function clipFile(src, footageId, startS, endS) {
           "copy",
           "-avoid_negative_ts",
           "make_zero",
+          "-fflags",
+          "+bitexact", // no ffmpeg version / date in the file, so the CMS and the post cut byte-identical sections
           "-movflags",
           "+faststart",
           "-f",

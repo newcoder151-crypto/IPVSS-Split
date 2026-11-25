@@ -46,7 +46,7 @@
         kpi('Open incidents', +d.incidents.open + +d.incidents.under_review, `${d.incidents.last_24h} in the last 24 h`, '', go('incidents')),
         kpi('NVRs online', `${d.nvr.online}/${d.nvr.total}`, `${d.nvr.suspended} suspended`, +d.nvr.online < +d.nvr.total ? 'amber' : 'ok', go('fleet')),
         kpi('Evidence held', d.evidence.active, `${d.evidence.permanent} for life - ${fmtSize(d.evidence.archive_bytes)}`, +d.evidence.failed_archive ? 'red' : '', go('evidence')),
-        kpi('Footage stored', fmtSize(d.segments.stored_bytes), `${d.segments.stored} segments, ${d.segments.uploading} uploading`, '', go('segments'))),
+        kpi('Footage stored', fmtSize(d.segments.stored_bytes), `${d.segments.stored} segments, ${d.segments.uploading} uploading`, '', go('fleet'))),
       h('div', { class: 'cols' },
         h('div', { class: 'card pad' }, h('h3', {}, 'Needs attention'), attention),
         h('div', { class: 'card pad' }, h('h3', {}, `Alerts, last 24 hours (${d.alerts.last_24h}, ${d.alerts.high_24h} high priority)`), barChart(d.by_hour),
@@ -101,7 +101,7 @@
     const qs0 = (S.params.qsort || 'old'); const qp = S.params.qprio || '';
     d.rows = d.rows.filter((a) => (qp === 'high' ? a.priority >= 7 : qp === 'low' ? a.priority < 7 : true) && (!S.params.qtype || a.alert_type === S.params.qtype));
     d.rows.sort(qs0 === 'new' ? (x, y) => new Date(y.received_time) - new Date(x.received_time) : qs0 === 'prio' ? (x, y) => y.priority - x.priority : (x, y) => new Date(x.received_time) - new Date(y.received_time));
-    const card = (a) => h('article', { class: `qcard ${(Date.now() - new Date(a.received_time).getTime()) > 300000 ? 'old' : ''}` },
+    const card = (a) => h('article', { class: `qcard ${(Date.now() - new Date(a.received_time).getTime()) > 300000 ? 'old' : ''}`, 'data-ref': `alert:${a.id}` },
       h('div', { class: 'qmain', onclick: (e) => { if (!e.target.closest('input,button')) openAlert(a.id); } },
         h('input', { type: 'checkbox', checked: selected.has(a.id), onchange: (e) => { e.target.checked ? selected.add(a.id) : selected.delete(a.id); bulk.disabled = !selected.size; bulk.textContent = `Dismiss selected (${selected.size})`; } }),
         h('div', { class: 'qico' }, C.ic(TYPE_IC[a.alert_type] || 'alert', 20)),
@@ -132,7 +132,7 @@
     ], [['new', 'Newest first'], ['old', 'Oldest first'], ['prio', 'Priority (high first)'], ['status', 'Needs attention first']]);
     return h('div', {}, head('Alerts', C.zoneSelect(), h('span', { class: 'muted' }, `${d.total} found`)), bar,
       table(['Event time', 'Priority', 'Type', 'Camera / train', 'Zone', 'Status', 'Post', 'Mode'],
-        d.rows.map((a) => h('tr', { class: 'click', onclick: () => openAlert(a.id) }, h('td', {}, fmtTime(a.event_time)), h('td', {}, prio(a.priority)), h('td', {}, label(a.alert_type)), h('td', {}, nvrCell(a)), h('td', {}, a.zone_name),
+        d.rows.map((a) => h('tr', { class: 'click', 'data-ref': `alert:${a.id}`, onclick: () => openAlert(a.id) }, h('td', {}, fmtTime(a.event_time)), h('td', {}, prio(a.priority)), h('td', {}, label(a.alert_type)), h('td', {}, nvrCell(a)), h('td', {}, a.zone_name),
           h('td', {}, stBadge('alert', a.status)), h('td', {}, a.post_name || '-', a.incident_id ? h('div', {}, badge(`incident #${a.incident_id}`, 'red')) : null), h('td', {}, label(a.routing_mode)))),
         'No alerts match these filters.'),
       pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); }));
@@ -160,6 +160,42 @@
   // =========================================================================================
   // Incidents
   // =========================================================================================
+  // ---- where an incident stands, and the action trail: the SAME story the post sees on its own dashboard ----
+  const WHO_TEXT = { cms: 'CMS must act', post: 'With the post', train: 'Waiting for the train' };
+  const SIDE_TEXT = { cms: 'CMS', post: 'Post', system: 'System' };
+  const waitingBanner = (t, i) => (t.waiting_on
+    ? h('div', { class: `waiting ${t.waiting_on.who}` }, h('b', {}, WHO_TEXT[t.waiting_on.who]), h('span', {}, t.waiting_on.text))
+    : h('div', { class: 'waiting done' }, h('b', {}, 'Closed'), h('span', {}, `${fmtTime(i.closed_at)}${i.closing_note ? ` - ${i.closing_note}` : ''}`)));
+  const tracker = (stages) => h('div', { class: 'trk' }, stages.map((s) => h('div', { class: `st ${s.state}` }, h('i', {}, s.state === 'done' ? C.ic('check', 11) : ''), h('b', {}, s.label),
+    s.detail ? h('small', {}, s.detail) : null, s.at ? h('small', {}, fmtShort(s.at)) : null, s.by ? h('small', {}, s.by) : null)));
+  const TRAIL_FILTERS = [['', 'Everything'], ['cms', 'CMS actions'], ['post', 'Post actions'], ['footage', 'Footage'], ['evidence', 'Evidence']];
+  const trailMatch = (e, f) => !f || (f === 'cms' || f === 'post' ? e.side === f : f === 'footage' ? ['request', 'footage'].includes(e.kind) : e.kind === f);
+  const REF_OPEN = { alert: (id) => openAlert(id), train_request: (id) => openRequest(id), evidence_flag: (id) => openFlag(id), incident: (id) => openIncident(id) };
+  const trailList = (events) => {
+    const f = S.trailFilter || ''; const rows = events.filter((e) => trailMatch(e, f));
+    return h('div', {}, chips(TRAIL_FILTERS, f, (v) => { S.trailFilter = v; C.reloadDrawer(); }),
+      rows.length ? h('div', { class: 'tl' }, rows.map((e) => h('div', { class: `tev ${e.tone || ''} ${e.ref && REF_OPEN[e.ref.entity] ? 'click' : ''}`, onclick: e.ref && REF_OPEN[e.ref.entity] ? () => REF_OPEN[e.ref.entity](e.ref.id) : null },
+        h('i', { class: `td ${e.side}` }, C.ic(e.icon || 'clock', 12)),
+        h('div', { class: 'tb' }, h('b', {}, e.title), e.body ? h('div', { class: 'tbody' }, e.body) : null,
+          h('div', { class: 'muted tm' }, `${fmtTime(e.at)} - ${e.actor || 'system'}`, h('span', { class: `sd ${e.side}` }, SIDE_TEXT[e.side])))))) : h('div', { class: 'muted mt' }, 'Nothing under this filter.'));
+  };
+  const footageRows = (rows) => (rows.length ? rows.map((f) => h('div', { class: 'item' },
+    h('b', {}, f.footage_id ? `Camera ${f.camera_no || ''} ${f.camera_name || ''}`.replace(/\s+/g, ' ').trim() : f.camera_name), ' ',
+    f.footage_id ? badge('delivered', 'green') : stBadge('req', f.status), f.flag ? [' ', badge(f.flag.retention === 'permanent' ? 'kept for life' : `kept until ${C.fmtDate(f.flag.retain_to)}`, 'indigo')] : null,
+    f.footage_id ? h('div', { class: 'muted' }, `${fmtShort(f.start_time)} to ${fmtShort(f.end_time)} - ${f.format}, ${fmtSize(f.file_size_bytes)}${f.duration_s ? `, ${Math.round(f.duration_s)} s` : ''}`) : h('div', { class: 'muted' }, f.failure_reason || 'not delivered yet'),
+    f.footage_id ? C.shaLine('SHA-256', f.sha256) : null,
+    f.views ? h('div', { class: 'muted' }, `viewed ${f.views.count} time${f.views.count === 1 ? '' : 's'}${f.views.by.length ? ` by ${f.views.by.join(', ')}` : ''}, last ${C.ago(f.views.last)}`) : (f.footage_id ? h('div', { class: 'muted' }, 'not viewed yet') : null),
+    f.footage_id ? h('div', { class: 'actions' }, h('button', { class: 'btn sm', onclick: () => playFootage(f.footage_id) }, 'Play'), h('button', { class: 'btn sm', onclick: () => downloadFootage(f.footage_id) }, 'Download'), f.flag ? h('button', { class: 'btn sm', onclick: () => openFlag(f.flag.id) }, 'Evidence') : null) : null))
+    : h('div', { class: 'muted' }, 'No footage requested for this incident yet.'));
+  /** One line for the list: what is happening right now. */
+  const progressCell = (i) => {
+    if (i.status === 'closed') return [badge('closed', 'grey')];
+    if (i.alert_delivery_id && !i.ack_at) return [badge('waiting for acknowledgement', 'red'), h('div', { class: 'muted' }, `sent ${C.ago(i.sent_at)}`)];
+    if (+i.requests_to_decide) return [badge(`${i.requests_to_decide} footage request${+i.requests_to_decide === 1 ? '' : 's'} need a decision`, 'amber')];
+    if (+i.open_requests) return [badge(`${i.open_requests} request${+i.open_requests === 1 ? '' : 's'} in progress`, 'teal')];
+    if (+i.footage_files) return [badge(`${i.footage_files} file${+i.footage_files === 1 ? '' : 's'} delivered`, 'green')];
+    return [badge(i.status === 'under_review' ? 'under review' : 'with the post', 'blue')];
+  };
   V.incidents = async () => {
     const limit = 50; const off = Number(S.params.offset || 0); const P = S.params;
     const d = await api('/incidents' + qs({ status: P.status || 'active', source: P.source, prio: P.prio, when: P.when, q: P.q, sort: P.sort, limit, offset: off, zone_id: P.zone_id }));
@@ -170,26 +206,28 @@
       { key: 'when', label: 'Raised', options: C.DATE_OPTS },
     ], [['new', 'Newest first'], ['old', 'Oldest first'], ['prio', 'Priority (high first)'], ['upd', 'Recently updated']]);
     return h('div', {}, head('Incidents', C.zoneSelect(), chips([['active', 'Active'], ['closed', 'Closed'], ['all', 'All']], P.status || 'active', (v) => { S.params.status = v; S.params.offset = 0; C.refresh(); }), h('span', { class: 'muted' }, `${d.total} found`)), bar,
-      table(['#', 'Raised', 'Incident', 'Post', 'Camera / train', 'Source', 'Status', 'Footage'],
-        d.rows.map((i) => h('tr', { class: 'click', onclick: () => openIncident(i.id) }, h('td', {}, i.id), h('td', {}, fmtTime(i.created_at), h('div', { class: 'muted' }, i.raised_by_username)),
+      table(['#', 'Raised', 'Incident', 'Post', 'Camera / train', 'Status', 'Where it stands', 'Footage & evidence', 'Last activity'],
+        d.rows.map((i) => h('tr', { class: 'click', 'data-ref': `incident:${i.id}`, onclick: () => openIncident(i.id) }, h('td', {}, i.id), h('td', {}, fmtTime(i.created_at), h('div', { class: 'muted' }, i.raised_by_username)),
           h('td', {}, h('b', {}, i.title || label(i.alert_type)), h('div', { class: 'muted' }, `${label(i.alert_type)} P${i.priority ?? '?'}`)), h('td', {}, i.post_name), h('td', {}, nvrCell(i)),
-          h('td', {}, badge(i.source, i.source === 'auto' ? 'indigo' : i.source === 'manual' ? 'blue' : 'grey')), h('td', {}, stBadge('inc', i.status)), h('td', {}, `${i.requests} req`, +i.flags ? h('div', {}, badge(`${i.flags} flagged`, 'amber')) : null))),
+          h('td', {}, stBadge('inc', i.status), h('div', { class: 'muted' }, i.source)), h('td', {}, progressCell(i)), h('td', {}, `${i.requests} request${+i.requests === 1 ? '' : 's'}, ${i.footage_files} file${+i.footage_files === 1 ? '' : 's'}`, +i.flags ? h('div', {}, badge(`${i.flags} retained`, 'amber')) : null), h('td', { class: 'muted' }, C.ago(i.updated_at)))),
         'No incidents match these filters.'), pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); }));
   };
   function openIncident(id) {
     C.openDrawer(`incident-${id}`, async () => {
       const d = await api(`/incidents/${id}`); const i = d.incident;
+      const t = d.trail;
       return C.drawerShell(`Incident #${i.id}`,
+        section('Where it stands', waitingBanner(t, i), tracker(t.stages)),
         section('Incident', kv([['Title', h('b', {}, i.title || label(i.alert_type))], ['Status', stBadge('inc', i.status)], ['Source', i.source], ['Post', i.post_name], ['Occurred', fmtTime(i.occurred_at)], ['Raised', `${fmtTime(i.created_at)} by ${i.raised_by_username}`],
           ['Camera / train', i.camera_name ? nvrCell(i) : '-'], ['Location', C.mapLink(i.lat, i.lon)], i.description ? ['Description', i.description] : null, i.closed_at ? ['Closed', `${fmtTime(i.closed_at)}${i.closing_note ? ` - ${i.closing_note}` : ''}`] : null,
           d.alert ? ['Alert', h('a', { href: '#', onclick: (e) => { e.preventDefault(); openAlert(d.alert.id); } }, `#${d.alert.id} ${label(d.alert.alert_type)} P${d.alert.priority}`)] : ['Alert', 'none (raised manually by the post)']])),
         section('Actions', h('div', { class: 'actions' },
           h('button', { class: 'btn', onclick: () => C.formDialog({ title: 'Add CMS note', fields: [{ name: 'text', label: 'Note', type: 'textarea' }], submitLabel: 'Add', submit: async (v) => { await api(`/incidents/${id}/note`, { method: 'POST', body: { text: v.text } }); C.reloadDrawer(); } }) }, 'Add note'),
           i.status === 'closed' ? h('button', { class: 'btn', onclick: () => C.formDialog({ title: 'Reopen incident', sub: 'The post is notified.', fields: [{ name: 'reason', label: 'Reason', type: 'textarea' }], submitLabel: 'Reopen', submit: async (v) => { await api(`/incidents/${id}/reopen`, { method: 'POST', body: { reason: v.reason } }); C.reloadDrawer(); C.refresh(); } }) }, 'Reopen') : null)),
-        section(`Footage requests (${d.requests.length})`, d.requests.length ? d.requests.map((r) => h('div', { class: 'item' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); openRequest(r.id); } }, `#${r.id}`), ' ', stBadge('req', r.status), ' ', r.camera_name, h('div', { class: 'muted' }, `${fmtShort(r.window_start)} to ${fmtShort(r.window_end)}`),
-          r.footage_id ? h('div', { class: 'actions' }, h('button', { class: 'btn sm', onclick: () => playFootage(r.footage_id) }, 'Play'), h('button', { class: 'btn sm', onclick: () => downloadFootage(r.footage_id) }, 'Download')) : null)) : h('div', { class: 'muted' }, 'None.')),
+        section(`Footage (${t.summary.files} delivered, ${t.summary.cameras_ready} of ${t.summary.cameras_total} cameras ready)`, footageRows(t.footage)),
+        d.requests.length ? section(`Footage requests (${d.requests.length})`, d.requests.map((r) => h('div', { class: 'item' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); openRequest(r.id); } }, `#${r.id}`), ' ', stBadge('req', r.status), ' ', r.camera_name, h('div', { class: 'muted' }, `${fmtShort(r.window_start)} to ${fmtShort(r.window_end)}`)))) : null,
         d.flags.length ? section('Evidence flags', d.flags.map((f) => h('div', { class: 'item' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); openFlag(f.id); } }, `#${f.id}`), ' ', f.retention === 'permanent' ? badge('for life', 'indigo') : badge('timed', 'blue'), ' ', stBadge('arch', f.archive_status), h('div', { class: 'muted' }, f.justification)))) : null,
-        section('Timeline', d.timeline.map((t) => h('div', { class: 'item' }, label(t.action.replace('incident.', '')), t.details && (t.details.text || t.details.note || t.details.reason) ? h('div', {}, t.details.text || t.details.note || t.details.reason) : null, h('div', { class: 'muted' }, `${fmtTime(t.occurred_at)} - ${t.actor || 'system'}`)))));
+        section(`Action trail (${t.events.length})`, trailList(t.events)));
     });
   }
 
@@ -228,7 +266,7 @@
     const cn = S.counts;
     return h('div', {}, head('Footage requests (by train number)', C.zoneSelect(), chips([['decide', 'Needs decision', cn.decide], ['waiting', 'Waiting for train', cn.waiting], ['done', 'Finished'], ['all', 'All']], tab, (v) => { S.params.tab = v; S.params.offset = 0; C.refresh(); }), h('span', { class: 'muted' }, `${d.total} found`)), rbar,
       table(['#', 'Requested', 'Post', 'Train', 'Window', 'Status', 'Actions'],
-        d.rows.map((r) => h('tr', { class: 'click', onclick: (e) => { if (!e.target.closest('button')) openRequest(r.id); } }, h('td', {}, r.id, r.incident_id ? h('div', { class: 'muted' }, `inc #${r.incident_id}`) : null),
+        d.rows.map((r) => h('tr', { class: 'click', 'data-ref': `train_request:${r.id}`, onclick: (e) => { if (!e.target.closest('button')) openRequest(r.id); } }, h('td', {}, r.id, r.incident_id ? h('div', { class: 'muted' }, `inc #${r.incident_id}`) : null),
           h('td', {}, fmtTime(r.created_at), h('div', { class: 'muted' }, r.requested_by_username)), h('td', {}, r.post_name), h('td', {}, trainCell(r)),
           h('td', {}, fmtShort(r.window_start), h('div', { class: 'muted' }, `to ${fmtShort(r.window_end)} (${Math.round((new Date(r.window_end) - new Date(r.window_start)) / 60000)} min)`), r.reason ? h('div', { class: 'muted clip' }, r.reason) : null),
           h('td', {}, stepper(r), stBadge('req', r.status), r.failure_reason ? h('div', { class: 'muted' }, r.failure_reason) : null),
@@ -301,14 +339,14 @@
     subs: [...SUBS, ['kept', 'How long it is kept', (f) => (f.retention === 'permanent' ? 'Kept for life' : 'Kept until a date')], ['who', 'Flagged by', (f) => f.flagged_by_username || f.flagged || '-']] };
   V.footage = async () => {
     const limit = 200; const off = Number(S.params.offset || 0);
-    const d = await api('/footage' + qs({ limit, offset: off, zone_id: S.params.zone_id }));
+    const d = await api('/footage' + qs({ limit, offset: off, zone_id: S.params.zone_id, ...C.dateParams() }));
     return C.splitView('footage', {
       head: head('Delivered footage', C.zoneSelect()),
       emptyPane: 'Select a recording to watch it here.',
-      list: (st) => h('div', {}, C.groupedList('footage', d.rows, FOOT_GROUP, (rs) => table(['#', 'Post', 'Camera / train', 'Recorded', 'Flags', ''],
+      list: (st) => h('div', {}, C.dateTrainBar({ id: 'footage', trains: d.trains, by: [['recorded', 'Recorded'], ['delivered', 'Delivered']] }), C.groupedList('footage', d.rows, FOOT_GROUP, (rs) => table(['#', 'Post', 'Camera / train', 'Recorded', 'Flags', ''],
         rs.map((f) => h('tr', { class: `click ${st.current === f.id ? 'sel' : ''}`, 'data-id': f.id, onclick: () => showFootage(st, f) }, h('td', {}, f.id, h('div', { class: 'muted' }, `req #${f.request_id}`)), h('td', {}, f.post_name), h('td', {}, nvrCell(f)),
           h('td', {}, fmtShort(f.start_time), h('div', { class: 'muted' }, `${f.duration_s ? fmtDur(f.duration_s) : ''} - ${fmtSize(f.file_size_bytes)}`)), h('td', {}, +f.active_flags ? badge(`${f.active_flags} flagged`, 'amber') : h('span', { class: 'muted' }, '30-day')),
-          h('td', {}, h('button', { class: 'btn sm primary' }, 'Play')))), 'No footage has been delivered yet.')), pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); })),
+          h('td', {}, h('button', { class: 'btn sm primary' }, 'Play')))), 'No footage matches - widen the search above, or none has been delivered yet.')), pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); })),
     });
   };
 
@@ -321,12 +359,14 @@
   const sectionText = (f) => (f.section_start_s != null ? `${fmtDur(f.section_start_s)} - ${fmtDur(f.section_end_s)} (${fmtDur(f.section_end_s - f.section_start_s)})` : 'whole file');
   const STORAGE_TEXT = { cms: 'On CMS (kept beyond 30 days)', local: 'Locally at the post only - CMS keeps no copy', both: 'On CMS and a local copy at the post' };
   const storageBadges = (f) => [f.storage !== 'local' ? h('div', {}, f.archive_status === 'archived' ? badge('on CMS', 'green') : stBadge('arch', f.archive_status)) : h('div', {}, badge('not on CMS', 'grey')), f.storage !== 'cms' ? h('div', {}, f.has_local ? badge('local at post', 'teal') : badge('local copy failed', 'red')) : null];
-  const flagFacts = (f) => kv([['Kept', STORAGE_TEXT[f.storage] || f.storage], ['Retention', f.retention === 'permanent' ? badge('for life', 'indigo') : `until ${fmtTime(f.retain_to)}`], ['Status', badge(f.status, f.status === 'active' ? 'green' : 'grey')], ['Post', f.post_name],
+  const flagFacts = (f) => kv([['Kept', STORAGE_TEXT[f.storage] || f.storage], ['Retention', [f.retention === 'permanent' ? 'for life ' : `until ${fmtTime(f.retain_to)} `, C.keptChip(f)]], ['Status', badge(f.status, f.status === 'active' ? 'green' : 'grey')], ['Post', f.post_name],
     ['Footage', `#${f.footage_id} - ${f.camera_name} / ${f.nvr_name}`], ['Train', camOf(f)], ['Section', [sectionText(f), f.section_from ? h('div', { class: 'muted' }, `${fmtTime(f.section_from)} to ${fmtTime(f.section_to)}`) : null]],
     ['Entered at the RPF', `${fmtTime(f.flagged_at)} by ${f.flagged_by_username}`], ['Justification', f.justification],
     f.storage !== 'local' ? ['CMS copy', [stBadge('arch', f.archive_status), f.archive_size_bytes ? ` ${fmtSize(f.archive_size_bytes)}` : '', f.archive_error ? h('div', { class: 'muted' }, f.archive_error) : null]] : null,
     f.storage !== 'cms' ? ['Local copy at the post', f.has_local ? `saved ${fmtTime(f.local_saved_at)} - ${fmtSize(f.local_size_bytes)} (the file is on the post's own server)` : badge(f.local_error || 'not saved', 'red')] : null,
-    f.archive_sha256 ? ['CMS SHA-256', h('span', { class: 'mono' }, f.archive_sha256)] : null, f.local_sha256 ? ['Local SHA-256', h('span', { class: 'mono' }, f.local_sha256)] : null,
+    f.footage_sha256 ? ['SHA-256 of the delivered recording (whole file)', C.shaLine('', f.footage_sha256, true)] : null, f.archive_sha256 ? [f.section_start_s == null ? 'SHA-256 of the CMS copy' : 'SHA-256 of the CMS copy (the section)', C.shaLine('', f.archive_sha256, true)] : null, f.local_sha256 ? [f.section_start_s == null ? "SHA-256 of the post's copy" : "SHA-256 of the post's copy (the section)", C.shaLine('', f.local_sha256, true)] : null,
+    f.checksum_check ? ['Checksum check', [checkChip(f), checkLines(f), f.archive_sha256 ? h('button', { class: 'btn sm', onclick: () => verifyDialog(f) }, C.ic('shield', 13), 'Verify now') : null]] : null,
+    f.ext_status ? ['Longer retention', [C.extStatus(f), f.ext_justification ? h('div', { class: 'muted' }, `Reason given: ${f.ext_justification}`) : null]] : null,
     f.released_at ? ['Released', `${fmtTime(f.released_at)}${f.released_by_username ? ` by ${f.released_by_username}` : ''} - ${f.release_note}`] : null]);
   async function showFlag(st, f) {
     C.selectRow(st, f.id);
@@ -343,14 +383,14 @@
   }
   V.evidence = async () => {
     const limit = 200; const off = Number(S.params.offset || 0);
-    const d = await api('/evidence' + qs({ status: S.params.estatus === undefined ? 'active' : S.params.estatus, limit, offset: off, zone_id: S.params.zone_id }));
+    const d = await api('/evidence' + qs({ status: S.params.estatus === undefined ? 'active' : S.params.estatus, limit, offset: off, zone_id: S.params.zone_id, ...C.dateParams() }));
     return C.splitView('evidence', {
       head: head('Evidence - flagged recordings', C.zoneSelect(), chips([['active', 'Held'], ['released', 'Released'], ['', 'All']], S.params.estatus === undefined ? 'active' : S.params.estatus, (v) => { S.params.estatus = v; S.params.offset = 0; C.refresh(); }), h('span', { class: 'muted' }, `${fmtSize(d.archive_bytes)} archived on CMS`)),
       emptyPane: 'Select a flagged recording to play it and see what the officer entered.',
-      list: (st) => h('div', {}, C.groupedList('evidence', d.rows, EVID_GROUP, (rs) => table(['#', 'Flagged', 'Section', 'Kept', 'Copies'],
-        rs.map((f) => h('tr', { class: `click ${st.current === f.id ? 'sel' : ''}`, 'data-id': f.id, onclick: () => showFlag(st, f) }, h('td', {}, f.id, f.incident_id ? h('div', { class: 'muted' }, `inc #${f.incident_id}`) : null), h('td', {}, fmtShort(f.flagged_at), h('div', { class: 'muted' }, `${f.flagged_by_username} - ${f.post_name}`)),
-          h('td', {}, sectionText(f), h('div', { class: 'muted' }, `${f.camera_name} / ${f.nvr_name}`), h('div', { class: 'muted' }, camOf(f))), h('td', {}, f.retention === 'permanent' ? badge('for life', 'indigo') : [badge('timed', 'blue'), h('div', { class: 'muted' }, `until ${C.fmtDate(f.retain_to)}`)], f.status !== 'active' ? h('div', {}, badge(f.status, 'grey')) : null), h('td', {}, storageBadges(f)))),
-        'Nothing has been flagged.')), pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); })),
+      list: (st) => h('div', {}, C.dateTrainBar({ id: 'evidence', trains: d.trains, by: [['recorded', 'Recorded'], ['flagged', 'Flagged']] }), C.groupedList('evidence', d.rows, EVID_GROUP, (rs) => table(['#', 'Flagged', 'Section', 'Kept', 'Copies'],
+        rs.map((f) => h('tr', { class: `click ${st.current === f.id ? 'sel' : ''}`, 'data-id': f.id, 'data-ref': `evidence_flag:${f.id}`, onclick: () => showFlag(st, f) }, h('td', {}, f.id, f.incident_id ? h('div', { class: 'muted' }, `inc #${f.incident_id}`) : null), h('td', {}, fmtShort(f.flagged_at), h('div', { class: 'muted' }, `${f.flagged_by_username} - ${f.post_name}`)),
+          h('td', {}, sectionText(f), h('div', { class: 'muted' }, `${f.camera_name} / ${f.nvr_name}`), h('div', { class: 'muted' }, camOf(f))), h('td', {}, C.keptChip(f), f.retention === 'permanent' ? null : h('div', { class: 'muted' }, `until ${C.fmtDate(f.retain_to)}`), f.ext_status === 'pending' ? h('div', {}, badge('extension pending', 'amber')) : null), h('td', {}, storageBadges(f)))),
+        'Nothing matches - widen the search above, or nothing has been flagged.')), pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); })),
     });
   };
   function openFlag(id) {
@@ -358,11 +398,123 @@
       const { flag: f, custody } = await api(`/evidence/${id}`);
       return C.drawerShell(`Evidence flag #${f.id}`,
         section('Flag', flagFacts(f)),
-        section('Actions', h('div', { class: 'actions' }, f.archive_status === 'archived' ? [h('button', { class: 'btn primary', onclick: () => playFlag(f) }, 'Play clip'), h('button', { class: 'btn', onclick: () => downloadFlag(f) }, 'Download')] : null,
+        section('Actions', h('div', { class: 'actions' }, retentionButtons(f, ''), f.archive_status === 'archived' ? [h('button', { class: 'btn primary', onclick: () => playFlag(f) }, 'Play clip'), h('button', { class: 'btn', onclick: () => downloadFlag(f) }, 'Download')] : null,
           f.archive_status === 'failed' ? actionBtn('Retry archive', async () => { await api(`/evidence/${id}/retry-archive`, { method: 'POST', body: {} }); C.reloadDrawer(); }) : null,
           C.isAdmin() && f.status === 'active' ? h('button', { class: 'btn danger', onclick: () => C.formDialog({ title: 'Release evidence flag', sub: 'Ends the retention hold. The post is notified. A timed flag also releases itself when its date passes.', fields: [{ name: 'note', label: 'Reason (required)', type: 'textarea' }], submitLabel: 'Release', danger: true, submit: async (v) => { await api(`/evidence/${id}/release`, { method: 'POST', body: { note: v.note } }); C.reloadDrawer(); C.refresh(); } }) }, 'Release hold...') : null)),
         section('Chain of custody', custody.map((x) => h('div', { class: 'item' }, h('b', {}, x.action), h('div', { class: 'muted' }, `${fmtTime(x.occurred_at)} - ${x.actor || 'system'}`)))));
     });
   }
   C.openFlag = openFlag;
+
+  // =========================================================================================
+  // Longer retention: an officer asks, an administrator decides here. And the long-term retention register.
+  // =========================================================================================
+  // ---- checksum verdict + verify (re-hash the stored file) ----
+  const checkChip = (f) => (f.checksum_check.state === 'mismatch' ? badge('CHECKSUM MISMATCH', 'red') : f.checksum_check.state === 'ok' ? badge('checksums match', 'green') : badge('not archived yet', 'grey'));
+  const checkLines = (f) => h('div', { class: 'chk' }, f.checksum_check.lines.map((l) => h('div', { class: `cl ${l.ok === true ? 'ok' : l.ok === false ? 'bad' : 'info'}` }, C.ic(l.ok === true ? 'check' : l.ok === false ? 'x' : 'eye', 13), ' ', l.text)));
+  function verifyDialog(f) {
+    api(`/evidence/${f.id}/verify`, { method: 'POST', body: {} }).then((r) => {
+      const { close } = C.dialog({ title: `Checksum check - flag #${f.id}`, sub: r.ok ? 'Passed. The result is written to the audit trail.' : 'FAILED. The result is written to the audit trail.', body: h('div', {},
+        h('div', { class: 'chk' }, r.checks.map((l) => h('div', { class: `cl ${l.ok ? 'ok' : 'bad'}` }, C.ic(l.ok ? 'check' : 'x', 13), ' ', l.text))),
+        r.actual ? h('div', { class: 'muted mt' }, 'Archived file SHA-256: ', C.shaLine('', r.actual, true)) : null,
+        h('div', { class: 'foot' }, h('button', { class: 'btn', onclick: () => { close(); C.refresh(); C.reloadDrawer(); } }, 'Close'))) });
+    }).catch((e) => toast(e.message));
+  }
+  async function verifyAll(rows) {
+    const todo = rows.filter((f) => f.archive_sha256); const bad = [];
+    toast(`Checking ${todo.length} archived file${todo.length === 1 ? '' : 's'}...`);
+    for (const f of todo) { try { const r = await api(`/evidence/${f.id}/verify`, { method: 'POST', body: {} }); if (!r.ok) bad.push([f, r]); } catch (e) { bad.push([f, { checks: [{ ok: false, text: e.message }] }]); } }
+    const { close } = C.dialog({ title: 'Checksum check', sub: `${todo.length} archived file${todo.length === 1 ? '' : 's'} re-hashed - ${bad.length ? `${bad.length} FAILED` : 'all passed'}. Written to the audit trail.`,
+      body: h('div', {}, bad.map(([f, r]) => h('div', { class: 'item' }, h('b', {}, `Flag #${f.id}`), ' ', badge('FAILED', 'red'), r.checks.filter((c) => !c.ok).map((c) => h('div', { class: 'muted' }, c.text)))),
+        h('div', { class: 'foot' }, h('button', { class: 'btn', onclick: () => close() }, 'Close'))) });
+  }
+  const askedText = (f) => (f.ext_retention === 'permanent' ? 'for life' : `until ${C.fmtDate(f.ext_retain_to)}`);
+  const endOfDay = (v) => new Date(`${v}T23:59:59`);
+  const timelineFields = (asked, f) => [
+    { name: 'mode', label: 'New retention', type: 'select', value: asked ? 'asked' : 'days', options: [...(asked ? [{ value: 'asked', label: `As requested (${askedText(f)})` }] : []), { value: 'days', label: 'Add a number of days to the current end' }, { value: 'date', label: 'Until a date' }, { value: 'permanent', label: 'Keep for life (permanent)' }] },
+    { name: 'days', label: 'Number of days to add (for "Add a number of days")', type: 'number', value: 30, min: 1, step: 1 },
+    { name: 'date', label: 'Keep until this day, included (for "Until a date")', type: 'date' },
+  ];
+  const timelineBody = (v) => {
+    if (v.mode === 'permanent') return { retention: 'permanent' };
+    if (v.mode === 'days') { const n = Number(v.days); if (!Number.isInteger(n) || n < 1) throw new Error('enter a whole number of days (1 or more)'); return { add_days: n }; }
+    if (v.mode === 'date') { if (!v.date) throw new Error('choose the date to keep it until'); return { retain_to: endOfDay(v.date).toISOString() }; }
+    return {}; // as requested
+  };
+  const afterDecision = () => { C.refresh(); C.refreshCounts(); C.reloadDrawer(); };
+  function approveExtDialog(f) {
+    C.formDialog({ title: `Approve longer retention - flag #${f.id}`, submitLabel: 'Approve',
+      sub: `Now kept ${C.endText(f)}. ${f.ext_requested_by_username || 'The post'} asks to keep it ${askedText(f)}. Reason given: ${f.ext_justification || '-'}`,
+      fields: [...timelineFields(true, f), { name: 'note', label: 'Note to the post (optional)', type: 'textarea' }],
+      submit: async (v) => { await api(`/evidence/${f.id}/extension/approve`, { method: 'POST', body: { ...timelineBody(v), note: v.note } }); toast(`Retention of flag #${f.id} extended - the post is told`); afterDecision(); } });
+  }
+  function rejectExtDialog(f) {
+    C.formDialog({ title: `Reject longer retention - flag #${f.id}`, sub: 'The recording stays kept until its current end date. The post is told why.', submitLabel: 'Reject', danger: true,
+      fields: [{ name: 'note', label: 'Reason (required)', type: 'textarea' }],
+      submit: async (v) => { await api(`/evidence/${f.id}/extension/reject`, { method: 'POST', body: { note: v.note } }); toast('Request rejected - the post is told'); afterDecision(); } });
+  }
+  function extendNowDialog(f) {
+    C.formDialog({ title: `Extend retention - flag #${f.id}`, submitLabel: 'Extend', sub: `Now kept ${C.endText(f)}. The change takes effect at once and is written to the audit trail; the post is told.`,
+      fields: [...timelineFields(false, f), { name: 'note', label: 'Justification (required)', type: 'textarea' }],
+      submit: async (v) => { await api(`/evidence/${f.id}/extend`, { method: 'POST', body: { ...timelineBody(v), note: v.note } }); toast(`Retention of flag #${f.id} extended`); afterDecision(); } });
+  }
+  /** Buttons a console user gets on a held flag: decide a pending request, or extend directly. */
+  const retentionButtons = (f, cls = 'sm') => (f.status !== 'active' ? null
+    : f.ext_status === 'pending' ? [h('button', { class: `btn primary ${cls}`, onclick: (e) => { e.stopPropagation(); approveExtDialog(f); } }, 'Approve...'), h('button', { class: `btn danger ${cls}`, onclick: (e) => { e.stopPropagation(); rejectExtDialog(f); } }, 'Reject...')]
+      : f.retention === 'timed' ? h('button', { class: `btn ${cls}`, onclick: (e) => { e.stopPropagation(); extendNowDialog(f); } }, C.ic('clock', 13), 'Extend...') : null);
+
+  const iso = (d) => (d ? new Date(d).toISOString() : '');
+  async function exportRetention(query) {
+    try {
+      const d = await api('/evidence' + qs({ ...query, export: 1, limit: 5000 }));
+      C.downloadCsv(`retention-register-${new Date().toISOString().slice(0, 10)}.csv`,
+        ['Flag', 'Post', 'Incident', 'Train', 'Unit', 'Camera', 'Recorded from', 'Recorded to', 'Section from', 'Section to', 'Format', 'Size (bytes)', 'Retention', 'Kept until', 'Days left', 'Stored', 'SHA-256 CMS archive copy', 'SHA-256 local copy', 'SHA-256 delivered file', 'Flagged by', 'Flagged at', 'Justification', 'Extension', 'Extension asked until', 'Extension decided by', 'Extension note'],
+        d.rows.map((f) => [f.id, f.post_name, f.incident_id || '', f.train_no || '', f.unit_no, `C${pad2(f.camera_no)} ${f.camera_name || ''}`.trim(), iso(f.footage_start || f.window_start), iso(f.footage_end || f.window_end), iso(f.section_from), iso(f.section_to), f.format,
+          f.archive_size_bytes || f.local_size_bytes || f.file_size_bytes || '', f.retention === 'permanent' ? 'for life' : 'timed', f.retention === 'permanent' ? '' : iso(f.retain_to), f.retention === 'permanent' ? '' : f.days_left, f.storage,
+          f.archive_sha256 || '', f.local_sha256 || '', f.footage_sha256 || '', f.flagged_by_username, iso(f.flagged_at), f.justification, f.ext_status || '', f.ext_status === 'pending' ? askedText(f) : '', f.ext_decided_by_username || '', f.ext_decision_note || '']));
+      if (d.total > d.rows.length) toast(`Exported the first ${d.rows.length} of ${d.total} - narrow the search to export the rest`);
+    } catch (e) { toast(e.message); }
+  }
+  V.retention = async () => {
+    const P = S.params; const limit = 50; const off = Number(P.offset || 0);
+    const query = { status: 'active', q: P.q, kept: P.kept, expiring: P.expiring, ext: P.ext, storage: P.storage, sort: P.sort || 'expiry', zone_id: P.zone_id, ...C.dateParams() };
+    const d = await api('/evidence' + qs({ ...query, limit, offset: off }));
+    const st = d.stats || { held: 0, life: 0, ending7: 0, ending30: 0, pending: 0 };
+    const pick = (patch) => { Object.assign(P, { kept: '', expiring: '', ext: '', q: '' }, patch); P.offset = 0; C.refresh(); };
+    const tile = (text, n, cls, active, onclick, hint) => h('button', { class: `tile ${cls} ${active ? 'on' : ''}`, onclick, title: hint || '' }, h('b', {}, n), h('span', {}, text));
+    const tiles = h('div', { class: 'tiles' },
+      tile('Held', st.held, '', !P.kept && !P.expiring && !P.ext, () => pick({}), 'Everything kept beyond the 30-day policy'),
+      tile('Waiting for a decision', st.pending, st.pending ? 'amber' : '', P.ext === 'pending', () => pick({ ext: 'pending' }), 'The post asked for a longer retention'),
+      tile('End within 7 days', st.ending7, st.ending7 ? 'red' : '', P.expiring === '7', () => pick({ expiring: '7' }), 'Extend them now or they are released'),
+      tile('End within 30 days', st.ending30, '', P.expiring === '30', () => pick({ expiring: '30' })),
+      tile('Kept for life', st.life, 'indigo', P.kept === 'permanent', () => pick({ kept: 'permanent' })));
+    const bar = C.filterBar([
+      { type: 'search', key: 'q', placeholder: 'Search train, camera, post, justification, SHA-256, #...' },
+      { key: 'storage', label: 'Stored', options: [['', 'Anywhere'], ['cms', 'On CMS'], ['local', 'Locally at the post'], ['both', 'Both']] },
+    ], [['expiry', 'Ending soonest'], ['new', 'Newest flag first'], ['recorded', 'Recording date']]);
+    const daysCell = (f) => {
+      if (f.retention === 'permanent') return h('div', { class: 'dl indigo' }, h('b', {}, 'For life'), h('small', {}, 'no end date'));
+      const total = Math.max(1, new Date(f.retain_to) - new Date(f.retain_from)); const pct = Math.round(Math.min(1, Math.max(0, (Date.now() - new Date(f.retain_from)) / total)) * 100);
+      const n = f.days_left; const cls = n <= 7 ? 'red' : n <= 30 ? 'amber' : 'green';
+      return h('div', { class: `dl ${cls}` }, h('b', {}, n <= 0 ? 'Ending' : String(n)), h('small', {}, n <= 0 ? 'now' : n === 1 ? 'day left' : 'days left'),
+        h('progress', { max: 100, value: pct, title: `${pct}% of the retention period has passed` }), h('small', {}, `until ${C.fmtDate(f.retain_to)}`));
+    };
+    return h('div', {},
+      head('Retention register', C.zoneSelect(), h('button', { class: 'btn', disabled: !d.rows.length, onclick: () => verifyAll(d.rows) }, C.ic('shield', 14), 'Verify checksums'), h('button', { class: 'btn', disabled: !d.rows.length, onclick: () => exportRetention(query) }, C.ic('download', 14), 'Export CSV')),
+      h('div', { class: 'muted mb' }, `${fmtSize(d.archive_bytes)} archived on CMS. How it works: the post asks for a longer retention from its Retention tab - you approve, change the date, or reject here - the post is told. Reminders go to both of you 30, 7 and 1 day before a retention ends.`),
+      tiles, C.dateTrainBar({ id: 'retention', trains: d.trains, by: [['recorded', 'Recorded'], ['flagged', 'Flagged']] }), bar,
+      table(['Flag', 'Recording', 'Days left', 'SHA-256 and check', 'Stored', 'Why it is kept', 'Extension', ''],
+        d.rows.map((f) => h('tr', { class: `click ${f.ext_status === 'pending' ? 'pend' : ''}`, 'data-ref': `evidence_flag:${f.id}`, onclick: () => openFlag(f.id) },
+          h('td', {}, `#${f.id}`, h('div', { class: 'muted' }, f.post_name), f.incident_id ? h('div', { class: 'muted' }, `inc #${f.incident_id}`) : null),
+          h('td', {}, h('strong', {}, trainOf(f)), h('div', { class: 'muted' }, `M-NVR ${pad2(f.unit_no)} - C${pad2(f.camera_no)} ${f.camera_name || ''}`.trim()), h('div', { class: 'muted' }, fmtShort(f.footage_start || f.window_start)),
+            h('div', { class: 'muted' }, `${sectionText(f)}, ${f.format}, ${fmtSize(f.archive_size_bytes || f.local_size_bytes || f.file_size_bytes || 0)}`)),
+          h('td', {}, daysCell(f)),
+          h('td', {}, checkChip(f), C.shaLine(f.checksum_check.whole ? 'CMS' : 'CMS section', f.archive_sha256), C.shaLine(f.checksum_check.whole ? 'post' : 'post section', f.local_sha256), !f.archive_sha256 && !f.local_sha256 ? h('span', { class: 'muted' }, 'not copied yet') : null),
+          h('td', {}, storageBadges(f)),
+          h('td', { class: 'clip' }, f.justification, h('div', { class: 'muted' }, `${f.flagged_by_username}, ${C.fmtDate(f.flagged_at)}`)),
+          h('td', {}, C.extStatus(f), f.ext_status === 'pending' && f.ext_justification ? h('div', { class: 'muted clip' }, `"${f.ext_justification}"`) : null),
+          h('td', { class: 'nowrap' }, retentionButtons(f), f.archive_sha256 ? h('button', { class: 'btn sm', title: 'Re-hash the archived file and compare', onclick: (e) => { e.stopPropagation(); verifyDialog(f); } }, 'Verify') : null))),
+        'Nothing is held beyond the 30-day policy for this search.'),
+      pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); }));
+  };
 })();

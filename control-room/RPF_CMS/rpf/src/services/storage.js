@@ -76,6 +76,38 @@ async function rootsChecked() {
   return [...new Set([config.mediaRoot, ...(cms ? [path.resolve(cms)] : []), ...config.mediaRootsExtra, ...learned])];
 }
 
+/**
+ * Footage that lives on ANOTHER CMS of the cluster: ask this post's own CMS for it (a signed request - the CMS forwards it to the CMS that
+ * holds the file), keep a checksum-verified copy in a cache folder and use that like any local file. Needs CMS_CLUSTER_SECRET in .env.
+ */
+const inflight = new Map();
+async function fetchRemote(cleaned, expectedSha) {
+  const secret = String(process.env.CMS_CLUSTER_SECRET || '').trim();
+  if (secret.length < 16 || !process.env.CMS_HOST || !process.env.CMS_PORT) return null;
+  const dir = path.resolve(__dirname, '..', '..', 'data', 'remote-cache');
+  const key = crypto.createHash('sha1').update(cleaned).digest('hex');
+  const dest = path.join(dir, `${key}${path.extname(cleaned)}`);
+  const finish = async () => { const st = await fs.promises.stat(dest); return { file: dest, size: st.size, name: path.basename(cleaned) }; };
+  try { if (fs.existsSync(dest) && (!expectedSha || (await sha256File(dest)) === expectedSha)) { const now = new Date(); fs.utimesSync(dest, now, now); return finish(); } } catch (_) { /* fetch again */ }
+  if (inflight.has(key)) return inflight.get(key);
+  const job = (async () => {
+    fs.mkdirSync(dir, { recursive: true });
+    for (const f of fs.readdirSync(dir)) { try { const fp = path.join(dir, f); if (Date.now() - fs.statSync(fp).mtimeMs > 12 * 3600 * 1000) fs.rmSync(fp, { force: true }); } catch (_) { /* ignore */ } }
+    const p = '/cluster/internal/media-by-path'; const node = 'rpf-post'; const ts = Date.now();
+    const sig = crypto.createHmac('sha256', secret).update(`${node}.${ts}.GET.${p}`).digest('hex');
+    let r;
+    try { r = await fetch(`http://${process.env.CMS_HOST}:${process.env.CMS_PORT}${p}?p=${encodeURIComponent(cleaned)}`, { headers: { 'X-Cluster-Node': node, 'X-Cluster-Ts': String(ts), 'X-Cluster-Sig': sig }, signal: AbortSignal.timeout(600000) }); } catch (e) { console.warn(`[storage] remote fetch of '${cleaned}' failed: ${e.message}`); return null; }
+    if (!r.ok) { console.warn(`[storage] the CMS cannot supply '${cleaned}' (HTTP ${r.status})`); return null; }
+    const tmp = `${dest}.part-${process.pid}`; const h = crypto.createHash('sha256');
+    await new Promise((resolve, reject) => { const out = fs.createWriteStream(tmp); require('stream').Readable.fromWeb(r.body).on('data', (d) => h.update(d)).on('error', reject).pipe(out).on('finish', resolve).on('error', reject); });
+    if (expectedSha && h.digest('hex') !== expectedSha) { fs.rmSync(tmp, { force: true }); console.warn(`[storage] '${cleaned}' from the other CMS did not match its checksum - discarded`); return null; }
+    fs.renameSync(tmp, dest);
+    return finish();
+  })().finally(() => inflight.delete(key));
+  inflight.set(key, job);
+  return job;
+}
+
 /** MEDIA_ROOT, the folder the live CMS reports, the other known footage folders, then a bounded search nearby. */
 async function resolveFootageFile(storagePath, expectedSha) {
   const cleaned = String(storagePath || '').replace(/^file:\/\//, '');
@@ -85,7 +117,7 @@ async function resolveFootageFile(storagePath, expectedSha) {
     const hit = await resolveUnder(dir, cleaned);
     if (hit) return hit;
   }
-  const hit = await searchNearby(cleaned, expectedSha);
+  const hit = (await searchNearby(cleaned, expectedSha)) || (await fetchRemote(cleaned, expectedSha));
   if (!hit) console.warn(`[storage] footage '${cleaned}' not found. Looked in: ${roots.join(', ')} and near ${path.resolve(__dirname, '..', '..', '..')}. Run: bash start.sh diagnose-footage`);
   return hit;
 }

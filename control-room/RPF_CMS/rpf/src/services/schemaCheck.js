@@ -22,7 +22,8 @@ const REQUIRED_COLUMNS = {
   delivered_footage: ['id', 'video_request_id', 'storage_path', 'format', 'sha256', 'file_size_bytes', 'delivered_at', 'start_time', 'end_time', 'duration_s', 'segment_count', 'train_request_id', 'train_no', 'unit_no', 'camera_no', 'file_name'],
   evidence_flag: ['id', 'footage_id', 'retain_from', 'retain_to', 'justification', 'flagged_by', 'status', 'retention', 'section_start_s', 'section_end_s',
     'section_from', 'section_to', 'incident_id', 'archive_status', 'archive_path', 'archive_sha256', 'archive_size_bytes', 'archived_at', 'archive_error', 'released_at', 'release_note',
-    'storage', 'local_path', 'local_sha256', 'local_size_bytes', 'local_saved_at', 'local_error'],
+    'storage', 'local_path', 'local_sha256', 'local_size_bytes', 'local_saved_at', 'local_error',
+    'ext_status', 'ext_retention', 'ext_retain_to', 'ext_justification', 'ext_requested_by', 'ext_requested_at', 'ext_decided_by', 'ext_decided_at', 'ext_decision_note'],
   notification: ['id', 'zone_id', 'post_id', 'kind', 'title', 'body', 'ref_entity', 'ref_id', 'created_at', 'read_at', 'read_by'],
   audit_log: ['actor_id', 'action', 'entity', 'entity_id', 'zone_id', 'occurred_at', 'details'],
 };

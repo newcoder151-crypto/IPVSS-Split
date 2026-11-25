@@ -5,6 +5,7 @@ const { footageForTrainRequests } = require('../services/requests');
 const { TRAIN_REQUEST_SELECT } = require('../services/trainRequests');
 const { postScopeSql, canSeePost } = require('../services/scope');
 const { audit } = require('../services/audit');
+const incidentTrail = require('../services/incidentTrail');
 const { parseId, parseLimit, parseTs, requireText } = require('../services/util');
 const { badRequest, notFound, conflict, wrap } = require('../errors');
 
@@ -22,7 +23,12 @@ const INCIDENT_SELECT = `
          i.nvr_id, n.name AS nvr_name, n.train_no, i.camera_id, c.name AS camera_name,
          ST_Y(i.location::geometry) AS lat, ST_X(i.location::geometry) AS lon, i.alert_delivery_id,
          (SELECT COUNT(*) FROM video_request r WHERE r.incident_id = i.id) AS request_count,
-         (SELECT COUNT(*) FROM evidence_flag e WHERE e.incident_id = i.id AND e.status = 'active') AS active_flags
+         (SELECT COUNT(*) FROM evidence_flag e WHERE e.incident_id = i.id AND e.status = 'active') AS active_flags,
+         (SELECT COUNT(*) FROM delivered_footage f JOIN video_request vr ON vr.id = f.video_request_id WHERE vr.incident_id = i.id OR vr.train_request_id IN (SELECT t.id FROM train_request t WHERE t.incident_id = i.id)) AS footage_files,
+         (SELECT COUNT(*) FROM train_request t WHERE t.incident_id = i.id AND t.status IN ('submitted','approved','awaiting_upload')) AS open_requests,
+         (SELECT COUNT(*) FROM train_request t WHERE t.incident_id = i.id AND t.status = 'submitted') AS requests_to_decide,
+         (SELECT d.sent_at FROM alert_delivery d WHERE d.id = i.alert_delivery_id) AS sent_at,
+         (SELECT d.ack_at FROM alert_delivery d WHERE d.id = i.alert_delivery_id) AS ack_at
     FROM incident i
     JOIN rpf_post p ON p.id = i.post_id
     JOIN users ur ON ur.id = i.raised_by
@@ -68,7 +74,8 @@ router.get('/:id', wrap(async (req, res) => {
        ) t ORDER BY t.occurred_at`, [id, inc.alert_delivery_id, inc.post_id, inc.post_name]),
 ]);
   const footage = await footageForTrainRequests(trainReqs.rows.map((t) => t.id));
-  res.json({ incident: inc, train_requests: trainReqs.rows, footage, flags: flags.rows, timeline: timeline.rows });
+  const trail = await incidentTrail.build(pool, inc, { scope: 'post' });
+  res.json({ incident: inc, train_requests: trainReqs.rows, footage, flags: flags.rows, timeline: timeline.rows, trail });
 }));
 
 /**

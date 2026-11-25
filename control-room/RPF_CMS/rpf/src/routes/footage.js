@@ -15,6 +15,9 @@ const {
   parseLimit,
   parseTs,
   requireText,
+  rangeSql,
+  likeSql,
+  trainSql,
 } = require("../services/util");
 const {
   HttpError,
@@ -36,20 +39,70 @@ async function loadScoped(user, id) {
   return f;
 }
 
-/** GET /api/footage?limit= - footage CMS has delivered to the caller's scope. */
+const TRAIN_COL = "COALESCE(f.train_no, n.train_no)";
+
+/**
+ * GET /api/footage?q=&train_no=&from=&to=&date_by=recorded|delivered&flagged=yes|no&limit=
+ * Footage CMS has delivered to the caller's post. from/to are ISO timestamps (from inclusive, to exclusive) made by the
+ * dashboard from the officer's calendar days. `q` also matches the SHA-256 or the file name.
+ */
 router.get(
   "/",
   wrap(async (req, res) => {
     const params = [];
-    const scope = postScopeSql(req.user, "p", params);
-    const limit = parseLimit(req.query.limit);
+    const where = [postScopeSql(req.user, "p", params)];
+    const q = req.query;
+    trainSql(where, params, q.train_no, TRAIN_COL);
+    rangeSql(
+      where,
+      params,
+      q.from,
+      q.to,
+      q.date_by === "delivered"
+        ? "f.delivered_at"
+        : "COALESCE(f.start_time, r.window_start)",
+    );
+    likeSql(where, params, q.q, [
+      "f.id",
+      "f.video_request_id",
+      "f.sha256",
+      "f.file_name",
+      "c.name",
+      "n.name",
+      TRAIN_COL,
+    ]);
+    if (q.flagged === "yes")
+      where.push(
+        `EXISTS (SELECT 1 FROM evidence_flag e WHERE e.footage_id = f.id AND e.status = 'active')`,
+      );
+    if (q.flagged === "no")
+      where.push(
+        `NOT EXISTS (SELECT 1 FROM evidence_flag e WHERE e.footage_id = f.id AND e.status = 'active')`,
+      );
+    const limit = parseLimit(q.limit);
     const { rows } = await pool.query(
-      `${FOOTAGE_SELECT} WHERE ${scope} ORDER BY f.id DESC LIMIT ${limit}`,
+      `${FOOTAGE_SELECT} WHERE ${where.join(" AND ")} ORDER BY COALESCE(f.start_time, r.window_start) DESC, f.id DESC LIMIT ${limit}`,
       params,
     );
     res.json(
       rows.map((f) => ({ ...f, playable: playableInBrowser(f.format) })),
     );
+  }),
+);
+
+/** GET /api/footage/trains - the train numbers this post has footage of: the choices offered while typing a train number. */
+router.get(
+  "/trains",
+  wrap(async (req, res) => {
+    const params = [];
+    const { rows } = await pool.query(
+      `SELECT DISTINCT ${TRAIN_COL} AS train_no
+         FROM delivered_footage f JOIN video_request r ON r.id = f.video_request_id JOIN rpf_post p ON p.id = r.post_id
+         JOIN camera c ON c.id = r.camera_id JOIN nvr_unit n ON n.id = c.nvr_id
+        WHERE ${postScopeSql(req.user, "p", params)} AND ${TRAIN_COL} IS NOT NULL ORDER BY 1 LIMIT 1000`,
+      params,
+    );
+    res.json(rows.map((x) => x.train_no));
   }),
 );
 
@@ -59,7 +112,8 @@ router.get(
     const f = await loadScoped(req.user, parseId(req.params.id));
     const { rows: flags } = await pool.query(
       `SELECT e.id, e.retention, e.retain_from, e.retain_to, e.justification, e.status, e.flagged_at, u.username AS flagged_by_username,
-            e.section_start_s, e.section_end_s, e.section_from, e.section_to, e.archive_status, e.archived_at
+            e.section_start_s, e.section_end_s, e.section_from, e.section_to, e.archive_status, e.archived_at, e.ext_status,
+            CASE WHEN e.retention = 'permanent' OR e.retain_to IS NULL THEN NULL ELSE CEIL(EXTRACT(EPOCH FROM (e.retain_to - now())) / 86400.0)::int END AS days_left
        FROM evidence_flag e JOIN users u ON u.id = e.flagged_by
       WHERE e.footage_id = $1 ORDER BY e.id DESC`,
       [f.id],
@@ -189,11 +243,12 @@ function parseSection(startRaw, endRaw, duration) {
 }
 
 /**
- * POST /api/footage/:id/flag { justification, retention: 'permanent' | 'timed', retain_to?, start_s?, end_s? }
+ * POST /api/footage/:id/flag { justification, retention: 'permanent' | 'timed', retain_to? | retain_days?, start_s?, end_s? }
  * Flags delivered footage - the whole file or one SECTION of it - for retention beyond the normal 30-day
- * policy (Cl. 3.15.6.2). retention 'permanent' keeps it for the life of the record; 'timed' keeps it until
- * retain_to (default DEFAULT_RETENTION_DAYS). CMS copies the section to permanent storage and its
- * retention job never deletes anything under an active flag. Justification is mandatory.
+ * policy (Cl. 3.15.6.2). The officer chooses the timeline: retention 'permanent' keeps it for the life of the
+ * record; 'timed' keeps it until a date (retain_to) or for a number of days from now (retain_days); when neither is
+ * given DEFAULT_RETENTION_DAYS applies. CMS copies the section to permanent storage and its retention job never
+ * deletes anything under an active flag. Justification is mandatory.
  */
 router.post(
   "/:id/flag",
@@ -210,10 +265,23 @@ router.post(
     const from = new Date();
     let to = null;
     if (retention === "timed") {
-      to = body.retain_to
-        ? parseTs(body.retain_to, "retain_to")
-        : new Date(from.getTime() + config.defaultRetentionDays * 86400000);
+      if (body.retain_days != null && body.retain_days !== "") {
+        const n = Number(body.retain_days);
+        if (!Number.isInteger(n) || n < 1 || n > config.maxRetentionDays)
+          throw badRequest(
+            `retain_days must be a whole number of days from 1 to ${config.maxRetentionDays}`,
+          );
+        to = new Date(from.getTime() + n * 86400000);
+      } else if (body.retain_to) {
+        to = parseTs(body.retain_to, "retain_to");
+      } else {
+        to = new Date(from.getTime() + config.defaultRetentionDays * 86400000);
+      }
       if (to <= from) throw badRequest("retain_to is already in the past");
+      if (to > new Date(from.getTime() + config.maxRetentionDays * 86400000))
+        throw badRequest(
+          `the retention cannot be longer than ${config.maxRetentionDays} days; choose "for life" instead`,
+        );
     }
 
     let section = null;

@@ -60,4 +60,18 @@ function searchFilter(w, text, cols) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-module.exports = { whenFilter, searchFilter, parseTs, parseId, parseLimit, parseOffset, requireText, optText, num, where, sleep };
+/** Date range on a timestamp column: `from` inclusive, `to` exclusive. Both are ISO timestamps made by the browser from the officer's local calendar days, so "5 Nov" means 5 Nov where they sit. */
+function rangeFilter(w, from, to, col) {
+  const f = from ? new Date(from) : null; const t = to ? new Date(to) : null;
+  if (f && !Number.isNaN(f.getTime())) w.add(`${col} >= ?`, f.toISOString());
+  if (t && !Number.isNaN(t.getTime())) w.add(`${col} < ?`, t.toISOString());
+}
+/** Train number: an EXACT match - the number ("12301") or the whole text ("12301 Rajdhani"), ignoring case. "1" does not find 12301. */
+function trainFilter(w, text, col) {
+  const t = typeof text === 'string' ? text.trim().slice(0, 40) : '';
+  if (!t) return;
+  w.params.push(t);
+  const n = w.params.length;
+  w.raw(`(lower(${col}) = lower($${n}) OR lower(split_part(${col}, ' ', 1)) = lower($${n}))`);
+}
+module.exports = { rangeFilter, trainFilter, whenFilter, searchFilter, parseTs, parseId, parseLimit, parseOffset, requireText, optText, num, where, sleep };

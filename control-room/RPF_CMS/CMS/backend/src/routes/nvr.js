@@ -189,7 +189,7 @@ router.use(
   wrap(async (req, res, next) => {
     // any contact counts as "seen"
     await pool.query(
-      `UPDATE nvr_unit SET last_seen = now() WHERE id = $1 AND (last_seen IS NULL OR last_seen < now() - interval '3 seconds')`,
+      `UPDATE nvr_unit SET last_seen = now(), home_node = COALESCE((SELECT node_no FROM cms_cluster_config WHERE id = 1), home_node) WHERE id = $1 AND (last_seen IS NULL OR last_seen < now() - interval '3 seconds' OR home_node IS DISTINCT FROM COALESCE((SELECT node_no FROM cms_cluster_config WHERE id = 1), home_node))`,
       [req.nvr.id],
     );
     next();
