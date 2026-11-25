@@ -89,10 +89,10 @@ async function processQueue() {
   // 1) too old to be useful
   const old = await pool.query(
     `UPDATE notification_delivery SET status = 'expired', last_error = 'not sent within ' || $1::text || ' minutes (network or gateway down) - dropped instead of arriving late'
-      WHERE status = 'pending' AND created_at < now() - make_interval(mins => $1)`, [o.maxAgeMin]);
+      WHERE status = 'pending' AND cms_owns(id) AND created_at < now() - make_interval(mins => $1)`, [o.maxAgeMin]);
   // 2) claim a batch (lease: if this process dies mid-send the row is picked up again later)
   const { rows } = await pool.query(
-    `WITH c AS (SELECT id FROM notification_delivery WHERE status = 'pending' AND next_attempt_at <= now() ORDER BY id LIMIT 20 FOR UPDATE SKIP LOCKED)
+    `WITH c AS (SELECT id FROM notification_delivery WHERE status = 'pending' AND next_attempt_at <= now() AND cms_owns(id) ORDER BY id LIMIT 20 FOR UPDATE SKIP LOCKED)
      UPDATE notification_delivery d SET attempts = d.attempts + 1, next_attempt_at = now() + interval '2 minutes'
        FROM c WHERE d.id = c.id RETURNING d.*`);
   let sent = 0, failed = 0, retry = 0, skipped = 0;

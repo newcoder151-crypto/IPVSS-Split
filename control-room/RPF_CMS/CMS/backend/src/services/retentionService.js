@@ -20,7 +20,7 @@ async function candidates(days, limit = 5000) {
                  AND COALESCE(e.section_from, f.start_time, r.window_start) < s.end_time
                  AND COALESCE(e.section_to,   f.end_time,   r.window_end)   > s.start_time
             ) AS protected
-       FROM video_segment s WHERE s.end_time < now() - make_interval(days => $1) ORDER BY s.start_time LIMIT $2`, [days, limit]);
+       FROM video_segment s WHERE s.end_time < now() - make_interval(days => $1) AND cms_owns_strict(s.id) ORDER BY s.start_time LIMIT $2`, [days, limit]);
   return rows;
 }
 
@@ -56,7 +56,7 @@ async function run({ dryRun = false, user = null } = {}) {
   const { rows: exp } = await pool.query(
     `SELECT e.id, e.archive_path, p.zone_id FROM evidence_flag e JOIN delivered_footage f ON f.id=e.footage_id
        JOIN video_request r ON r.id=f.video_request_id JOIN rpf_post p ON p.id=r.post_id
-      WHERE e.status='active' AND e.retention='timed' AND e.retain_to <= now()`);
+      WHERE e.status='active' AND e.retention='timed' AND e.retain_to <= now() AND cms_owns_strict(e.footage_id)`);
   for (const e of exp) {
     if (e.archive_path) { try { fs.rmSync(absPath(e.archive_path), { force: true }); } catch (_) { /* ignore */ } }
     await pool.query(`UPDATE evidence_flag SET status='released', released_at=now(), release_note='retention period elapsed',
@@ -79,7 +79,7 @@ async function remindExpiring() {
     `SELECT e.id, e.retain_to, CEIL(EXTRACT(EPOCH FROM (e.retain_to - now())) / 86400.0)::int AS days_left, p.id AS post_id, p.name AS post_name, p.zone_id
        FROM evidence_flag e JOIN delivered_footage f ON f.id = e.footage_id JOIN video_request r ON r.id = f.video_request_id JOIN rpf_post p ON p.id = r.post_id
       WHERE e.status = 'active' AND e.retention = 'timed' AND e.retain_to IS NOT NULL AND COALESCE(e.ext_status, '') <> 'pending'
-        AND CEIL(EXTRACT(EPOCH FROM (e.retain_to - now())) / 86400.0)::int IN (30, 7, 1)`);
+        AND CEIL(EXTRACT(EPOCH FROM (e.retain_to - now())) / 86400.0)::int IN (30, 7, 1) AND cms_owns(e.id)`);
   let sent = 0;
   for (const f of rows) {
     const when = f.days_left === 1 ? 'tomorrow' : `in ${f.days_left} days`;

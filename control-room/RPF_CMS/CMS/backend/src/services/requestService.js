@@ -577,7 +577,7 @@ async function processOpen() {
       role: "super_admin",
     };
     const { rows } = await pool.query(
-      `SELECT id FROM video_request WHERE status = 'submitted' AND created_at < now() - interval '3 seconds' ORDER BY id`,
+      `SELECT id FROM video_request WHERE status = 'submitted' AND created_at < now() - interval '3 seconds' AND cms_owns(id) ORDER BY id`,
     );
     for (const { id } of rows) {
       try {
@@ -591,7 +591,7 @@ async function processOpen() {
     }
   }
   const { rows } = await pool.query(
-    `SELECT id FROM video_request WHERE status = ANY($1) ORDER BY id`,
+    `SELECT id FROM video_request WHERE status = ANY($1) AND cms_owns_nvr((SELECT c.nvr_id FROM camera c WHERE c.id = video_request.camera_id)) ORDER BY id`,
     [OPEN],
   );
   for (const { id } of rows) {
@@ -605,7 +605,7 @@ async function processOpen() {
   n += await trainSvc().processOpen();
   await pool.query(
     `UPDATE nvr_command c SET status='cancelled', completed_at=now()
-      WHERE c.status IN ('queued','sent','acked') AND c.request_id IS NOT NULL
+      WHERE c.status IN ('queued','sent','acked') AND c.request_id IS NOT NULL AND cms_owns_nvr(c.nvr_id)
         AND EXISTS (SELECT 1 FROM video_request r WHERE r.id = c.request_id AND r.status NOT IN ('approved','amended','awaiting_upload','submitted'))`,
   );
   return `${n} request(s) processed`;

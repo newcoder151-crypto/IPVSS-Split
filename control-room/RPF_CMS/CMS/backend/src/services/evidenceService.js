@@ -66,7 +66,7 @@ async function archiveFlag(id) {
 }
 
 async function archivePending() {
-  const { rows } = await pool.query(`SELECT id FROM evidence_flag WHERE archive_status = 'pending' AND status = 'active' ORDER BY id LIMIT 20`);
+  const { rows } = await pool.query(`SELECT id FROM evidence_flag WHERE archive_status = 'pending' AND status = 'active' AND cms_owns_strict(footage_id) ORDER BY id LIMIT 20`);
   for (const { id } of rows) await archiveFlag(id);
   return `${rows.length} flag(s) archived`;
 }
@@ -208,4 +208,36 @@ async function verify(user, id) {
   return { ok, actual, recorded: f.archive_sha256, checks };
 }
 
-module.exports = { FLAG_SELECT, archiveFlag, archivePending, retryArchive, release, decideExtension, extend, verify, checksumCheck };
+/**
+ * N+1 for evidence: the archived clip of a flag is on the disk of the CMS that holds the footage. Every OTHER CMS keeps a verified copy
+ * (so evidence survives the loss of one computer), and drops its copy when the flag is released or expires.
+ */
+async function mirrorArchives() {
+  const cluster = require('./cluster');
+  const me = await cluster.self();
+  if (!me) return 'not clustered';
+  const { rows } = await pool.query(
+    `SELECT e.id, e.footage_id, e.archive_path, e.archive_sha256 FROM evidence_flag e
+      WHERE e.archive_status = 'archived' AND e.status = 'active' AND e.archive_path IS NOT NULL AND NOT cms_owns_strict(e.footage_id) ORDER BY e.id LIMIT 300`);
+  let got = 0; let failed = 0; let dropped = 0; let tried = 0;
+  rows.sort(() => Math.random() - 0.5); // a clip that cannot be fetched must not hold back the ones behind it
+  for (const f of rows) {
+    if (got >= 3 || tried >= 60) break; // a few downloads per tick: big files, slow links
+    const dest = absPath(f.archive_path);
+    if (exists(dest)) continue;
+    const ownerNo = cluster.nodeOfId(f.footage_id);
+    const node = await cluster.nodeByNo(ownerNo);
+    if (!node || !(await cluster.isAlive(ownerNo))) continue;
+    tried++;
+    try {
+      const sha = await cluster.downloadFromNode(node, 'evidence', f.id, dest);
+      if (sha !== f.archive_sha256) { fs.rmSync(dest, { force: true }); failed++; await cluster.event('mirror', ownerNo, `copy of evidence flag #${f.id} from ${node.name} did not match its checksum - discarded`); } else got++;
+    } catch (_) { failed++; }
+  }
+  const { rows: gone } = await pool.query(
+    `SELECT e.id, e.archive_path FROM evidence_flag e WHERE e.status <> 'active' AND e.archive_path IS NOT NULL AND NOT cms_owns_strict(e.footage_id) ORDER BY e.id DESC LIMIT 300`);
+  for (const f of gone) { const p = absPath(f.archive_path); if (exists(p)) { try { fs.rmSync(p, { force: true }); dropped++; } catch (_) { /* ignore */ } } }
+  return `${got} evidence clip(s) copied from other CMS, ${failed} failed, ${dropped} released cop${dropped === 1 ? 'y' : 'ies'} removed`;
+}
+
+module.exports = { FLAG_SELECT, mirrorArchives, archiveFlag, archivePending, retryArchive, release, decideExtension, extend, verify, checksumCheck };

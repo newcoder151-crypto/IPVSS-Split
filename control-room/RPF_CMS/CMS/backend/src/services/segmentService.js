@@ -362,7 +362,7 @@ async function sweepStale(staleMin = 30) {
   const { rows } = await pool.query(
     `SELECT s.id, s.nvr_id, s.camera_id, s.start_time, s.end_time, s.object_key, s.size_bytes, s.sha256
        FROM video_segment s
-      WHERE s.upload_status IN ('pending','partial')
+      WHERE s.upload_status IN ('pending','partial') AND cms_owns_strict(s.id)
         AND NOT EXISTS (SELECT 1 FROM upload_session u WHERE u.segment_id = s.id AND u.updated_at > now() - make_interval(mins => $1))
         AND NOT EXISTS (SELECT 1 FROM nvr_command m WHERE m.nvr_id = s.nvr_id AND m.camera_id = s.camera_id AND m.status IN ('queued','sent','acked'))
       ORDER BY s.id LIMIT 500`,

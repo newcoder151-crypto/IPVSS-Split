@@ -564,7 +564,7 @@ async function processOpen() {
       role: "super_admin",
     };
     const { rows } = await pool.query(
-      `SELECT id FROM train_request WHERE status = 'submitted' AND created_at < now() - interval '3 seconds' ORDER BY id`,
+      `SELECT id FROM train_request WHERE status = 'submitted' AND created_at < now() - interval '3 seconds' AND cms_owns(id) ORDER BY id`,
     );
     for (const { id } of rows) {
       try {
@@ -578,7 +578,7 @@ async function processOpen() {
     }
   }
   const { rows } = await pool.query(
-    `SELECT id FROM train_request WHERE status = ANY($1) ORDER BY id`,
+    `SELECT id FROM train_request WHERE status = ANY($1) AND cms_owns(id) ORDER BY id`,
     [OPEN_TR],
   );
   for (const { id } of rows) {

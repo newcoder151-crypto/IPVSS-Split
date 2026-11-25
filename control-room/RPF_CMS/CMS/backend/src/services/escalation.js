@@ -16,6 +16,7 @@ async function run() {
        FROM alert_delivery d JOIN alert a ON a.id = d.alert_id AND a.event_time = d.alert_event_time
       WHERE d.ack_at IS NULL AND d.sent_at < now() - make_interval(mins => $1)
         AND a.status IN ('routed','escalated')
+        AND cms_owns(d.alert_id)
         AND NOT EXISTS (SELECT 1 FROM alert_delivery e WHERE e.escalated_from = d.id)
         AND NOT EXISTS (SELECT 1 FROM alert_delivery o WHERE o.alert_id = d.alert_id AND o.alert_event_time = d.alert_event_time AND o.ack_at IS NOT NULL)
       ORDER BY d.id LIMIT 50`, [mins]);

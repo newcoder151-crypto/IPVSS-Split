@@ -51,9 +51,30 @@ const JOBS = [
   {
     name: "partitions",
     every: 86400,
-    fn: async () =>
-      `${(await pool.query("SELECT ensure_partitions(3) AS n")).rows[0].n} partition(s) created`,
+    fn: async () => {
+      const n = (await pool.query("SELECT ensure_partitions(3) AS n")).rows[0].n;
+      await pool.query("SELECT cms_enable_live_triggers()").catch(() => {});
+      return `${n} partition(s) created`;
+    },
     label: "Database: monthly alert / GPS partitions",
+  },
+  {
+    name: "cluster_beat",
+    every: 10,
+    fn: () => require("./cluster").beat(),
+    label: "Cluster: tell the other CMS this one is alive",
+  },
+  {
+    name: "cluster_probe",
+    every: 10,
+    fn: () => require("./cluster").probe(),
+    label: "Cluster: check that the other CMS are reachable",
+  },
+  {
+    name: "evidence_mirror",
+    every: 60,
+    fn: () => require("./evidenceService").mirrorArchives(),
+    label: "Cluster: keep a copy of the other CMS's archived evidence (N+1 for evidence)",
   },
 ];
 
