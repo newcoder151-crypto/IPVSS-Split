@@ -18,6 +18,7 @@ const {
   rangeSql,
   likeSql,
   trainSql,
+  mnvrSql,
 } = require("../services/util");
 const {
   HttpError,
@@ -40,6 +41,7 @@ async function loadScoped(user, id) {
 }
 
 const TRAIN_COL = "COALESCE(f.train_no, n.train_no)";
+const MNVR = { uid: "n.mnvr_uid", name: "n.name", no: "COALESCE(f.unit_no, n.unit_no, n.id)" };
 
 /**
  * GET /api/footage?q=&train_no=&from=&to=&date_by=recorded|delivered&flagged=yes|no&limit=
@@ -53,6 +55,7 @@ router.get(
     const where = [postScopeSql(req.user, "p", params)];
     const q = req.query;
     trainSql(where, params, q.train_no, TRAIN_COL);
+    mnvrSql(where, params, q.mnvr, MNVR);
     rangeSql(
       where,
       params,
@@ -69,6 +72,7 @@ router.get(
       "f.file_name",
       "c.name",
       "n.name",
+      "n.mnvr_uid",
       TRAIN_COL,
     ]);
     if (q.flagged === "yes")
@@ -103,6 +107,22 @@ router.get(
       params,
     );
     res.json(rows.map((x) => x.train_no));
+  }),
+);
+
+/** GET /api/footage/mnvrs - the M-NVRs (unique id + name) this post has footage of: the choices offered while typing an M-NVR. */
+router.get(
+  "/mnvrs",
+  wrap(async (req, res) => {
+    const params = [];
+    const { rows } = await pool.query(
+      `SELECT DISTINCT n.mnvr_uid AS uid, n.name
+         FROM delivered_footage f JOIN video_request r ON r.id = f.video_request_id JOIN rpf_post p ON p.id = r.post_id
+         JOIN camera c ON c.id = r.camera_id JOIN nvr_unit n ON n.id = c.nvr_id
+        WHERE ${postScopeSql(req.user, "p", params)} ORDER BY 1 LIMIT 1000`,
+      params,
+    );
+    res.json(rows);
   }),
 );
 
@@ -297,6 +317,9 @@ router.post(
       ? new Date(base.getTime() + section.end * 1000)
       : null;
 
+    // 'whole' (EVIDENCE_COPY in config/control-room.conf, the default): the CMS archive copy and this post's copy are byte-for-byte copies of
+    // the delivered file, so all three SHA-256 are the same; the flagged section is kept as markers. 'section': only the cut-out is kept.
+    const copyKind = section && String(process.env.EVIDENCE_COPY || "whole").toLowerCase() === "section" ? "section" : "whole";
     // A local copy is made BEFORE the flag row is written, so a failure (no ffmpeg, file missing) leaves nothing half-flagged.
     let tmpLocal = null;
     let localNote = null;
@@ -305,7 +328,7 @@ router.post(
         "SELECT id, storage_path FROM delivered_footage WHERE id = $1",
         [f.id],
       );
-      const prep = await localEvidence.prepare(sp[0], section);
+      const prep = await localEvidence.prepare(sp[0], copyKind === "section" ? section : null);
       tmpLocal = prep.tmp;
       localNote = prep.why;
     }
@@ -338,8 +361,8 @@ router.post(
         const incidentId = link[0].rid || link[0].via_alert || null;
 
         const { rows } = await client.query(
-          `INSERT INTO evidence_flag (footage_id, retention, retain_from, retain_to, justification, flagged_by, section_start_s, section_end_s, section_from, section_to, incident_id, storage, archive_status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id, retention, retain_from, retain_to, status, flagged_at, archive_status, storage`,
+          `INSERT INTO evidence_flag (footage_id, retention, retain_from, retain_to, justification, flagged_by, section_start_s, section_end_s, section_from, section_to, incident_id, storage, archive_status, copy_kind)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id, retention, retain_from, retain_to, status, flagged_at, archive_status, storage`,
           [
             f.id,
             retention,
@@ -354,6 +377,7 @@ router.post(
             incidentId,
             storage,
             storage === "local" ? "not_requested" : "pending",
+            copyKind,
           ],
         );
         await audit(client, {

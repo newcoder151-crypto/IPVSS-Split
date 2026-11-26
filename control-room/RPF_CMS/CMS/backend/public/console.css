@@ -239,8 +239,10 @@ label.nt-switch { position: relative; flex: none; display: inline-block; width: 
 .shaline .btn.sm { padding: 1px 7px; font-size: 11px; }
 td.clip, .muted.clip { max-width: 260px; word-break: break-word; }
 
-.fsel.grow { flex: 1 1 200px; }
-.fsel.grow input { width: 100%; }
+.fsel.grow { flex: 0 0 auto; }
+.fsel.grow input { width: 130px; min-width: 0; }
+.fsel.grow.mnvr input { width: 170px; }
+.fsel.grow.wide input { width: 190px; }
 .searchbar .quick { display: flex; gap: 4px; align-self: flex-end; }
 
 /* ---- the bell (notices) and the boundary on new things ---- */
@@ -322,3 +324,26 @@ pre.cmd { background: var(--hover); border: 1px solid var(--line); border-radius
 ol.steps { padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
 .banner.bad { background: color-mix(in srgb, var(--red) 12%, var(--panel)); border: 1px solid var(--red); border-radius: var(--radius); padding: 10px 14px; margin: 10px 0; }
 .card.pad { padding: 14px 16px; margin-bottom: 14px; } .card.pad h3 { margin: 0 0 8px; }
+
+/* ---- Cluster tab: CMS found on the network ---- */
+.mono.big { font-size: 14px; font-weight: 700; white-space: nowrap; }
+.ctrains summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.ctrain { margin: 4px 0; font-size: 12.5px; }
+.cunit { display: inline-block; margin: 2px 6px 2px 0; padding: 1px 6px; border: 1px solid var(--line); border-radius: 8px; }
+.cunit.on { border-color: var(--green, #2e7d32); }
+.cunit code { font-size: 11px; }
+/* the box inside a label is laid out in a column: it must not stretch in height (flex-basis would mean 240px tall) */
+.searchbar .fsel .fsearch, .fsel.grow .fsearch { flex: 0 0 auto; min-width: 0; height: 34px; align-self: stretch; }
+
+/* search box = the input + its own search button, attached on the right (outside the input, not drawn inside it) */
+.sbox { position: static; display: inline-flex; align-items: stretch; min-width: 0; align-self: flex-end; }
+.sbox .fsearch { padding-right: 10px; border-top-right-radius: 0; border-bottom-right-radius: 0; margin: 0; }
+.sbox .sbtn { position: static; transform: none; flex: 0 0 auto; width: 38px; height: 34px; display: inline-flex; align-items: center; justify-content: center; padding: 0; margin: 0 0 0 -1px;
+  border: 1px solid var(--accent); border-radius: 0 8px 8px 0; background: var(--accent); color: var(--accent-ink, #fff); cursor: pointer; }
+.sbox .sbtn:hover { filter: brightness(1.1); }
+.sbox .sbtn:focus-visible { outline: 2px solid var(--brand-2, var(--blue)); outline-offset: 1px; }
+.sbox .sbtn svg { pointer-events: none; }
+.fsel .sbox { display: flex; align-self: auto; }
+.fsel .sbox .fsearch { flex: 1 1 auto; }
+.filterbar > .sbox, .searchbar > .sbox { flex: 1 1 260px; }
+.filterbar > .sbox .fsearch, .searchbar > .sbox .fsearch { flex: 1 1 auto; width: 100%; }

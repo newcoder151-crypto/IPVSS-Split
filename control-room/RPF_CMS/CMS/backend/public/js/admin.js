@@ -217,7 +217,18 @@
   // Fleet
   // =========================================================================================
   V.fleet = async () => {
-    const rows = await api("/nvrs" + qs({ zone_id: S.params.zone_id }));
+    const P = S.params;
+    const rows = await api("/nvrs" + qs({ zone_id: P.zone_id, train: P.ftrain, mnvr: P.fmnvr, camera: P.fcamera }));
+    const reloadF = () => C.refresh();
+    const box = (key, label, ph, cls) =>
+      h("label", { class: `fsel grow ${cls || ""}` }, h("span", {}, label),
+        C.searchBox(h("input", { class: "fsearch", type: "search", autocomplete: "off", placeholder: ph, "aria-label": label, value: P[key] || "", onchange: (e) => { P[key] = e.target.value.trim(); reloadF(); } }), (v) => { P[key] = String(v).trim(); reloadF(); }));
+    const fleetBar = h("div", { class: "filterbar searchbar" },
+      box("ftrain", "Train no.", "12301"),
+      box("fmnvr", "M-NVR", "id, no. or name", "mnvr"),
+      box("fcamera", "Camera", "name or no.", "mnvr"),
+      P.ftrain || P.fmnvr || P.fcamera ? h("button", { class: "btn sm", type: "button", onclick: () => { delete P.ftrain; delete P.fmnvr; delete P.fcamera; reloadF(); } }, C.ic("x", 13), "Reset search") : null,
+      h("span", { class: "fcount" }, `${rows.length} M-NVR${rows.length === 1 ? "" : "s"} found`));
     return h(
       "div",
       {},
@@ -232,6 +243,7 @@
             )
           : null,
       ),
+      fleetBar,
       C.groupedBy(
         "fleet",
         rows,
@@ -277,6 +289,7 @@
                     "td",
                     {},
                     h("b", {}, n.name),
+                    h("div", { class: "muted mono", title: "Unique id given by the CMS - it never changes" }, n.mnvr_uid),
                     n.health && n.health.ip
                       ? h("div", { class: "muted" }, n.health.ip)
                       : null,
@@ -448,6 +461,7 @@
         section(
           "Unit",
           kv([
+            ["M-NVR id", h("code", { class: "mono" }, n.mnvr_uid)],
             [
               "Status",
               n.status !== "active"
@@ -1453,12 +1467,15 @@
     const reload = () => C.refresh();
     const tile = (text, n, cls, hint) => h('div', { class: `tile static ${cls || ''}`, title: hint || '' }, h('b', {}, n), h('span', {}, text));
 
-    const editSelf = () => C.formDialog({ title: 'This CMS', sub: 'The name and place other CMS and the people at the posts see. Other fields are set by the cluster.', submitLabel: 'Save',
+    const dir = d.directory || { self: {}, peers: [], summary: {} };
+    const mine = dir.self || {};
+    const editSelf = () => C.formDialog({ title: `This CMS (${mine.cms_uid})`, sub: 'The name and place the other CMS and the people at the posts see. The unique id never changes.', submitLabel: 'Save',
       fields: [
-        { name: 'name', label: 'Name', value: (d.nodes.find((n) => n.is_me) || {}).name || '' },
-        { name: 'location', label: 'Location (city / control room)', value: (d.nodes.find((n) => n.is_me) || {}).location || '' },
-        { name: 'url', label: 'Address other CMS use to reach this one', value: (d.nodes.find((n) => n.is_me) || {}).url || '', placeholder: 'http://10.1.2.3:7080' },
-        { name: 'role', label: 'Role', type: 'select', value: (d.nodes.find((n) => n.is_me) || {}).role || 'active', options: [{ value: 'active', label: 'Active - has M-NVRs and posts connected' }, { value: 'standby', label: 'Standby - the spare (N+1), takes over when another CMS fails' }] },
+        { name: 'name', label: 'Name', value: mine.name || '' },
+        { name: 'location', label: 'Location (city / control room)', value: mine.location || '' },
+        ...(d.clustered ? [
+          { name: 'url', label: 'Address other CMS use to reach this one (data sync)', value: (d.nodes.find((n) => n.is_me) || {}).url || '', placeholder: 'http://10.1.2.3:7080' },
+          { name: 'role', label: 'Role', type: 'select', value: (d.nodes.find((n) => n.is_me) || {}).role || 'active', options: [{ value: 'active', label: 'Active - has M-NVRs and posts connected' }, { value: 'standby', label: 'Standby - the spare (N+1), takes over when another CMS fails' }] }] : []),
       ],
       submit: async (v) => { await api('/cluster/self', { method: 'PATCH', body: v }); toast('Saved'); reload(); } });
 
@@ -1486,13 +1503,45 @@
       sub: 'Do this for a CMS that has been retired for good. Its data stays everywhere; its M-NVRs and posts must be pointed at another CMS.', fields: [{ name: 'force', label: 'It is still online - remove anyway', type: 'select', value: 'false', options: [{ value: 'false', label: 'No (refuse if it is online)' }, { value: 'true', label: 'Yes' }] }],
       submit: async (v) => { await api(`/cluster/nodes/${n.node_uuid}/remove`, { method: 'POST', body: { force: v.force === 'true' } }); toast('Removed'); reload(); } });
 
-    if (!d.clustered) {
-      return h('div', {}, head('Cluster'),
-        h('div', { class: 'card pad' }, h('h3', {}, 'This CMS runs on its own'),
-          h('p', {}, 'Several CMS can work together: for N+1 redundancy (a spare takes over when one fails), or one per location. They share all data, every CMS can play the video of every other CMS, and archived evidence is copied between them.'),
-          h('p', {}, 'To start a cluster, run on this computer:'), h('pre', { class: 'cmd' }, 'node scripts/cluster.js create --name "Delhi CMS" --location "Delhi" --url http://THIS-HOST:7080'),
-          h('p', { class: 'muted' }, 'It stays a single CMS until you add another one. Nothing changes for the people using it.')));
-    }
+    const eventsCard = () => h('div', { class: 'card pad' }, h('h3', {}, 'What happened'), d.events.length ? h('div', { class: 'tl' }, d.events.map((e) => h('div', { class: `tev ${e.kind === 'down' ? 'bad' : e.kind === 'up' || e.kind === 'join' ? 'done' : e.kind === 'takeover' ? 'warn' : ''}` }, h('i', { class: 'td system' }, C.ic(e.kind === 'down' ? 'alert' : e.kind === 'takeover' ? 'zap' : 'check', 12)), h('div', { class: 'tb' }, h('b', {}, e.message), h('div', { class: 'muted tm' }, `${fmtTime(e.at)} - ${e.kind}`))))) : h('div', { class: 'muted' }, 'Nothing yet.'));
+    // ---- every CMS on the network, found by itself (no set-up) ----
+    const DSTAT = { online: ['online', 'green'], unreachable: ['heard, not answering', 'amber'], offline: ['OFFLINE', 'red'] };
+    const dsum = dir.summary || {};
+    const dtiles = h('div', { class: 'tiles' },
+      tile('CMS on the network', dsum.cms || 1, ''), tile('Online', dsum.online || 1, 'green'), tile('Offline', dsum.offline || 0, dsum.offline ? 'red' : ''),
+      tile('M-NVRs (online / all)', `${dsum.mnvrs_online || 0} / ${dsum.mnvrs || 0}`, ''), tile('Trains', dsum.trains || 0, ''));
+    const trainsBlock = (n) => (n.trains || []).length ? h('details', { class: 'ctrains' }, h('summary', {}, `${n.trains.length} train${n.trains.length === 1 ? '' : 's'} / group${n.trains.length === 1 ? '' : 's'}`),
+      n.trains.map((t) => h('div', { class: 'ctrain' }, h('b', {}, t.train_no ? `Train ${t.train_no}` : 'No train number'), ' ',
+        (t.units || []).map((u) => h('span', { class: `cunit ${u.online ? 'on' : ''}`, title: `${u.name} - ${u.cameras} cameras - ${u.online ? 'online' : 'offline'}` }, `M${String(u.unit_no).padStart(2, '0')} `, h('code', { class: 'mono' }, u.mnvr_uid)))))) : h('span', { class: 'muted' }, 'no M-NVR yet');
+    const dirRow = (n) => {
+      const [stText, stCls] = n.is_me ? ['this CMS', 'blue'] : DSTAT[n.status] || ['?', 'grey'];
+      const st = n.stats || {};
+      return h('tr', { class: n.status === 'offline' ? 'down' : '' },
+        h('td', {}, h('code', { class: 'mono big' }, n.cms_uid), h('div', { class: 'muted' }, `v${n.version || '?'}${n.is_me ? ` - up ${fmtUp(n.uptime_s)}` : ''}`)),
+        h('td', {}, h('strong', {}, n.name || '-'), h('div', { class: 'muted' }, n.location || 'location not set'), n.host ? h('div', { class: 'muted' }, n.host) : null),
+        h('td', {}, n.url ? h('a', { href: `${n.url}/console/`, target: '_blank', rel: 'noopener' }, n.url.replace(/^https?:\/\//, '')) : h('span', { class: 'muted' }, '-'),
+          !n.is_me ? h('div', { class: 'muted' }, n.source === 'broadcast' ? 'found by broadcast' : n.source === 'gossip' ? 'told by another CMS' : n.source === 'config' ? 'from the config file' : '') : null),
+        h('td', {}, badge(stText, stCls),
+          !n.is_me && n.status !== 'online' && n.error ? h('div', { class: 'muted' }, ({ ECONNREFUSED: 'not running, or its port is blocked', 'no answer (timed out)': 'no answer - powered off or unreachable', EHOSTUNREACH: 'computer unreachable' })[n.error] || n.error) : null,
+          !n.is_me && n.rtt_ms != null && n.status === 'online' ? h('div', { class: 'muted' }, `answers in ${n.rtt_ms} ms`) : null,
+          Math.abs(n.skew_ms || 0) > 5000 ? h('div', { class: 'warnline' }, `clock is ${Math.round(n.skew_ms / 1000)} s off`) : null),
+        h('td', { class: 'muted' }, n.is_me ? 'now' : n.seen_age_s == null ? 'never' : `${n.seen_age_s} s ago`),
+        h('td', {}, st.nvrs != null ? [`${st.nvrs_online || 0}/${st.nvrs} M-NVRs online`, h('div', { class: 'muted' }, `${st.open_alerts || 0} open alerts, ${st.open_incidents || 0} incidents`)] : '-'),
+        h('td', {}, trainsBlock(n)),
+        h('td', {}, st.disk ? [`${st.disk.free_gb} GB free`, h('div', { class: 'muted' }, `of ${st.disk.total_gb} GB`)] : '-', st.footage != null ? h('div', { class: 'muted' }, `${st.footage} recordings`) : null),
+        h('td', { class: 'nowrap' }, n.is_me ? (admin ? h('button', { class: 'btn sm', onclick: editSelf }, 'Edit') : null)
+          : [n.url ? h('a', { class: 'btn sm', href: `${n.url}/console/`, target: '_blank', rel: 'noopener' }, 'Open console') : null, ' ',
+            n.status === 'offline' && admin ? h('button', { class: 'btn sm danger', title: 'Stop listing this CMS (it comes back by itself if it is heard again)', onclick: async () => { await api(`/cluster/directory/${n.cms_uid}/forget`, { method: 'POST', body: {} }); reload(); } }, 'Forget') : null]));
+    };
+    const autoCard = h('div', { class: 'card pad' }, h('h3', {}, 'CMS on this network'),
+      h('div', { class: 'muted mb' }, dir.enabled === false ? 'Automatic discovery is switched off (CMS_DISCOVERY in config/control-room.conf).' : `Run  bash start.sh  on another PC of the network and its CMS appears here by itself, with its own unique id. Nothing to set up. (Found by a UDP broadcast on port ${dir.port}; CMS in another network: put one of their addresses in CMS_SEED_URLS in config/control-room.conf.)`),
+      table(['CMS id', 'Name / place', 'Address', 'Status', 'Last seen', 'M-NVRs', 'Trains and M-NVR ids', 'Storage', ''], [mine, ...(dir.peers || [])].map(dirRow), 'No CMS.'));
+    const advanced = h('details', { class: 'card pad' }, h('summary', {}, h('b', {}, 'Advanced: share data between CMS (optional)')),
+      h('p', { class: 'muted' }, 'Finding each other needs nothing. To also share alerts, incidents, requests and video between CMS (N+1 take-over, every CMS plays the video of every other), the databases must be replicated. That needs PostgreSQL set-up and is done once, on the command line:'),
+      h('pre', { class: 'cmd' }, 'node scripts/cluster.js create --name "Delhi CMS" --location "Delhi" --url http://THIS-HOST:7080'),
+      h('p', { class: 'muted' }, 'Details: cluster/CLUSTER.md. A CMS that is not replicated keeps working on its own data.'));
+    const topHead = () => head('Cluster', h('button', { class: 'btn', onclick: async () => { await api('/cluster/probe', { method: 'POST', body: {} }); toast('Checked'); reload(); } }, C.ic('activity', 14), 'Check now'), admin ? h('button', { class: 'btn', onclick: editSelf }, 'Edit this CMS') : null);
+    if (!d.clustered) return h('div', {}, topHead(), dtiles, autoCard, advanced, eventsCard());
 
     const me = d.nodes.find((n) => n.is_me);
     const live = d.nodes.filter((n) => n.status !== 'removed');
@@ -1528,11 +1577,12 @@
     return h('div', {},
       head('Cluster', h('button', { class: 'btn', onclick: async () => { await api('/cluster/probe', { method: 'POST', body: {} }); toast('Checked'); reload(); } }, C.ic('activity', 14), 'Check now'), admin ? h('button', { class: 'btn primary', onclick: addCms }, C.ic('plus', 14), 'Add a CMS') : null),
       h('div', { class: 'muted mb' }, `You are on ${me ? me.name : 'this CMS'}${me && me.location ? ` (${me.location})` : ''}, node ${d.self.node_no} of the cluster. Every CMS has its own range of record numbers, so a number tells which CMS made it. Video stays on the CMS that recorded it and is streamed to the others when someone plays it; archived evidence is copied to every CMS.`),
+      dtiles, autoCard,
       tiles,
       !d.summary.redundant ? h('div', { class: 'banner bad' }, 'Only one CMS is running. If it fails, nobody takes over its alerts and notifications. Start another CMS (or check why it is offline).') : null,
-      h('div', { class: 'card pad' }, h('h3', {}, 'CMS in the cluster'),
+      h('div', { class: 'card pad' }, h('h3', {}, 'CMS in the data-sync cluster'),
         table(['CMS', 'Location / address', 'Status', 'Last heartbeat', 'M-NVRs', 'Work of this CMS', 'Storage', ''], live.concat(d.nodes.filter((n) => n.status === 'removed')).map(nodeRow), 'No CMS.')),
       h('div', { class: 'card pad' }, h('h3', {}, 'Data sync between the databases'), repTable),
-      h('div', { class: 'card pad' }, h('h3', {}, 'What happened'), d.events.length ? h('div', { class: 'tl' }, d.events.map((e) => h('div', { class: `tev ${e.kind === 'down' ? 'bad' : e.kind === 'up' || e.kind === 'join' ? 'done' : e.kind === 'takeover' ? 'warn' : ''}` }, h('i', { class: 'td system' }, C.ic(e.kind === 'down' ? 'alert' : e.kind === 'takeover' ? 'zap' : 'check', 12)), h('div', { class: 'tb' }, h('b', {}, e.message), h('div', { class: 'muted tm' }, `${fmtTime(e.at)} - ${e.kind}`))))) : h('div', { class: 'muted' }, 'Nothing yet.')));
+      eventsCard());
   };
 })();

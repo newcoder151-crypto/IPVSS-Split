@@ -74,4 +74,18 @@ function trainFilter(w, text, col) {
   const n = w.params.length;
   w.raw(`(lower(${col}) = lower($${n}) OR lower(split_part(${col}, ' ', 1)) = lower($${n}))`);
 }
-module.exports = { rangeFilter, trainFilter, whenFilter, searchFilter, parseTs, parseId, parseLimit, parseOffset, requireText, optText, num, where, sleep };
+/**
+ * M-NVR: its unique id (M-3F9A2C-0007, or part of it), its M-NVR number in the train (7, M07, M-07) or part of its name.
+ * c = the SQL for { uid, name, no } of the unit in the query at hand.
+ */
+function mnvrFilter(w, text, c) {
+  const t = typeof text === 'string' ? text.trim().slice(0, 60) : '';
+  if (!t) return;
+  w.params.push(`%${t.replace(/[%_\\]/g, '')}%`);
+  const like = w.params.length;
+  const parts = [`${c.uid} ILIKE $${like}`, `${c.name} ILIKE $${like}`];
+  const m = /^m?[\s-]*0*(\d{1,9})$/i.exec(t);
+  if (m) { w.params.push(Number(m[1])); parts.push(`${c.no} = $${w.params.length}`); }
+  w.raw('(' + parts.join(' OR ') + ')');
+}
+module.exports = { rangeFilter, trainFilter, mnvrFilter, whenFilter, searchFilter, parseTs, parseId, parseLimit, parseOffset, requireText, optText, num, where, sleep };

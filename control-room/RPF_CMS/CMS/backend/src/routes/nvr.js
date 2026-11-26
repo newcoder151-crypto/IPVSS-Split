@@ -54,11 +54,15 @@ async function applyIdentity(nvrId, ib) {
         [nvrId, trainNo],
       ); // a different train: re-numbered by the next sync
   } catch (e) {
-    if (e.code === "23505")
-      throw conflict(
-        `M-NVR number ${wantUnit} is already used in train ${trainNo || "this train"} by another unit - give each M-NVR of a train its own number`,
-      );
-    throw e;
+    if (e.code !== "23505") throw e;
+    // The number the unit asked for is taken by another unit of the train: the CMS decides. A unit that already has a number keeps it;
+    // a new one gets the lowest free number. (The unit's permanent id is mnvr_uid, given by the CMS - the number is only its place in the train.)
+    await pool.query(
+      `UPDATE nvr_unit SET train_no = COALESCE(NULLIF($2::text, ''), train_no),
+              unit_no = COALESCE(unit_no, (SELECT MIN(g) FROM generate_series(1, 99) g WHERE NOT EXISTS
+                (SELECT 1 FROM nvr_unit x WHERE lower(btrim(x.train_no)) = lower(btrim(COALESCE(NULLIF($2::text, ''), nvr_unit.train_no))) AND x.unit_no = g))) WHERE id = $1`,
+      [nvrId, trainNo],
+    );
   }
 }
 const clientIp = (req) =>
@@ -86,7 +90,7 @@ router.post(
     const attempt = () =>
       withTransaction(async (client) => {
         let { rows } = await client.query(
-          "SELECT id, name, status, current_zone_id FROM nvr_unit WHERE cert_fingerprint = $1",
+          "SELECT id, mnvr_uid, name, status, current_zone_id FROM nvr_unit WHERE cert_fingerprint = $1",
           [fp],
         );
         if (rows[0]) {
@@ -97,7 +101,7 @@ router.post(
           return { ...rows[0], ...(back || {}), how: "restored" };
         }
         ({ rows } = await client.query(
-          `SELECT id, name, status, current_zone_id FROM nvr_unit WHERE lower(name) = lower($1) AND cert_fingerprint LIKE 'pending-%' AND status <> 'removed' FOR UPDATE`,
+          `SELECT id, mnvr_uid, name, status, current_zone_id FROM nvr_unit WHERE lower(name) = lower($1) AND cert_fingerprint LIKE 'pending-%' AND status <> 'removed' FOR UPDATE`,
           [name],
         ));
         if (rows[0]) {
@@ -143,7 +147,7 @@ router.post(
         )
           unique = `${name} (${n})`;
         const ins = await client.query(
-          `INSERT INTO nvr_unit (name, cert_fingerprint, current_zone_id) VALUES ($1,$2,$3) RETURNING id, name, status, current_zone_id`,
+          `INSERT INTO nvr_unit (name, cert_fingerprint, current_zone_id) VALUES ($1,$2,$3) RETURNING id, mnvr_uid, name, status, current_zone_id`,
           [unique, fp, zone.id],
         );
         await client.query(
@@ -176,6 +180,7 @@ router.post(
       .status(u.how === "new" ? 201 : 200)
       .json({
         id: u.id,
+        mnvr_uid: u.mnvr_uid,
         name: u.name,
         status: u.status,
         zone_id: u.current_zone_id,

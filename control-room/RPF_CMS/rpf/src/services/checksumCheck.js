@@ -11,7 +11,7 @@
  * Returns { state: 'ok' | 'mismatch' | 'pending', whole, lines: [{ ok: true|false|null, text }] }
  */
 module.exports = function checksumCheck(f) {
-  const whole = f.section_start_s == null;
+  const whole = f.section_start_s == null || f.copy_kind === 'whole'; // a whole-file copy is byte-identical to the delivered file even when a section is flagged
   const del = f.footage_sha256; const arc = f.archive_sha256; const loc = f.local_sha256;
   const lines = [];
   if (whole) {

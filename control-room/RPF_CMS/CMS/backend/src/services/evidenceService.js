@@ -11,14 +11,14 @@ const checksumCheck = require('./checksumCheck');
 
 const FLAG_SELECT = `
   SELECT e.id, e.footage_id, e.incident_id, e.retention, e.retain_from, e.retain_to, e.justification, e.status, e.flagged_at,
-         e.section_start_s, e.section_end_s, e.section_from, e.section_to,
+         e.section_start_s, e.section_end_s, e.section_from, e.section_to, e.copy_kind,
          e.archive_status, e.archive_path, e.archive_sha256, e.archive_size_bytes, e.archived_at, e.archive_error,
          e.released_at, e.release_note,
          CASE WHEN e.retention = 'permanent' OR e.retain_to IS NULL THEN NULL ELSE CEIL(EXTRACT(EPOCH FROM (e.retain_to - now())) / 86400.0)::int END AS days_left,
          e.ext_status, e.ext_retention, e.ext_retain_to, e.ext_justification, e.ext_requested_at, e.ext_decided_at, e.ext_decision_note, ux.username AS ext_requested_by_username, ud.username AS ext_decided_by_username,
          f.sha256 AS footage_sha256, f.end_time AS footage_end, f.file_name, e.storage, e.local_sha256, e.local_size_bytes, e.local_saved_at, e.local_error, (e.local_path IS NOT NULL) AS has_local, e.local_path, uf.username AS flagged_by_username, ur.username AS released_by_username,
          f.format, f.file_size_bytes, f.duration_s, r.id AS request_id, r.window_start, r.window_end,
-         p.id AS post_id, p.name AS post_name, p.zone_id, c.id AS camera_id, c.name AS camera_name, n.name AS nvr_name, COALESCE(f.train_no, n.train_no) AS train_no, COALESCE(f.unit_no, n.unit_no, n.id) AS unit_no, COALESCE(f.camera_no, c.mnvr_camera_id, c.id) AS camera_no, f.start_time AS footage_start, f.train_request_id
+         p.id AS post_id, p.name AS post_name, p.zone_id, c.id AS camera_id, c.name AS camera_name, n.name AS nvr_name, COALESCE(f.train_no, n.train_no) AS train_no, n.mnvr_uid, COALESCE(f.unit_no, n.unit_no, n.id) AS unit_no, COALESCE(f.camera_no, c.mnvr_camera_id, c.id) AS camera_no, f.start_time AS footage_start, f.train_request_id
     FROM evidence_flag e
     JOIN users uf ON uf.id = e.flagged_by
     LEFT JOIN users ur ON ur.id = e.released_by
@@ -37,7 +37,7 @@ const FLAG_SELECT = `
  */
 async function archiveFlag(id) {
   const { rows } = await pool.query(
-    `SELECT e.id, e.status, e.section_start_s, e.section_end_s, f.storage_path, p.zone_id, p.id AS post_id
+    `SELECT e.id, e.status, e.section_start_s, e.section_end_s, e.copy_kind, f.storage_path, p.zone_id, p.id AS post_id
        FROM evidence_flag e JOIN delivered_footage f ON f.id = e.footage_id JOIN video_request r ON r.id = f.video_request_id
        JOIN rpf_post p ON p.id = r.post_id
       WHERE e.id = $1`, [id]);
@@ -48,7 +48,8 @@ async function archiveFlag(id) {
     const src = absPath(e.storage_path);
     if (!exists(src)) throw new Error('the delivered footage file is missing from the footage store');
     const dst = absPath(rel);
-    if (e.section_start_s != null) await cutClip(src, dst, e.section_start_s, e.section_end_s);
+    // 'whole' (default): a byte-for-byte copy of the delivered file, so its SHA-256 equals the delivered file's. 'section' = the older cut-out.
+    if (e.section_start_s != null && e.copy_kind === 'section') await cutClip(src, dst, e.section_start_s, e.section_end_s);
     else { ensureDir(dst); fs.copyFileSync(src, dst); }
     const sha = await sha256File(dst);
     const size = fs.statSync(dst).size;
@@ -197,7 +198,7 @@ async function verify(user, id) {
   else {
     actual = await sha256File(abs);
     checks.push({ ok: actual === f.archive_sha256, text: actual === f.archive_sha256 ? 'The archived file still matches the SHA-256 recorded when it was archived' : 'The archived file has CHANGED since it was archived (SHA-256 differs from the record)' });
-    if (f.section_start_s == null) checks.push({ ok: actual === f.footage_sha256, text: actual === f.footage_sha256 ? 'It is identical to the delivered file' : 'It is NOT identical to the delivered file' });
+    if (f.section_start_s == null || f.copy_kind === 'whole') checks.push({ ok: actual === f.footage_sha256, text: actual === f.footage_sha256 ? 'It is identical to the delivered file' : 'It is NOT identical to the delivered file' });
     if (f.local_sha256) {
       const same = f.local_sha256 === f.archive_sha256;
       checks.push({ ok: same, text: same ? "The post's copy is identical" : "The post's copy DIFFERS - the post can repair it with Verify" });

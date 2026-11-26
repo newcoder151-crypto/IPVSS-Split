@@ -55,7 +55,7 @@ function buildApp() {
       res.json({
         status: media.ok ? "ok" : "degraded",
         db: "reachable",
-        version: "0.2.0",
+        version: config.version,
         footage_store: media.ok ? "writable" : "PROBLEM",
         ...(local
           ? {
@@ -217,6 +217,7 @@ async function main() {
   await require("./services/cluster").init().catch((e) => console.warn("cluster init:", e.message));
   jobs.start();
   live.start();
+  await require("./services/directory").start().catch((e) => console.warn("CMS discovery:", e.message));
   // React to work the moment it appears (the interval ticks stay as a safety net).
   live.subscribe((e) => {
     if (e.t === "evidence_flag" && e.op === "INSERT") jobs.kick("archive");
@@ -226,6 +227,7 @@ async function main() {
   const bye = () => {
     jobs.stop();
     live.stop();
+    require("./services/directory").stop();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   };

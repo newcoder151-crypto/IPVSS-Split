@@ -29,6 +29,7 @@
 
   // ---------- icons ----------
   const ICONS = {
+    search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
     gauge: '<path d="M12 14l4-4"/><path d="M3.3 19a10 10 0 1 1 17.4 0"/>', list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>', map: '<path d="M1 6v16l7-4 8 4 7-4V2l-7 4-8-4-7 4z"/><path d="M8 2v16M16 6v16"/>', users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>', cog: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>', flask: '<path d="M9 3h6M10 3v6L4 19a2 2 0 0 0 1.7 3h12.6a2 2 0 0 0 1.7-3l-6-10V3"/>', activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>', clip: '<path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/>', db: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.7-4 3-9 3s-9-1.3-9-3M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/>',
     sun: '<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/>',
     moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/>',
@@ -111,8 +112,22 @@
     const ct = res.headers.get('content-type') || '';
     const data = ct.includes('json') ? await res.json().catch(() => null) : null;
     if (!res.ok) throw new Error((data && data.error) || `request failed (${res.status})`);
-    return data;
+    return C.tidyNames(data);
   };
+  // A unit that was removed and registered again keeps its old row under the name "<name> [removed #2]": show the plain name.
+  C.tidyNames = function tidyNames(x) {
+    if (Array.isArray(x)) x.forEach(tidyNames);
+    else if (x && typeof x === 'object') {
+      for (const k of Object.keys(x)) {
+        if ((k === 'nvr_name' || k === 'name') && typeof x[k] === 'string') x[k] = x[k].replace(/ \[removed #\d+\]$/, '');
+        else if (x[k] && typeof x[k] === 'object') tidyNames(x[k]);
+      }
+    }
+    return x;
+  };
+  /** A search box with a magnifier button: click it (or press Enter) to search. apply(text) runs the search. */
+  C.searchBox = (input, apply) => h('span', { class: 'sbox' }, input,
+    h('button', { class: 'sbtn', type: 'button', title: 'Search', 'aria-label': 'Search', onmousedown: (e) => e.preventDefault(), onclick: () => apply(input.value) }, C.ic('search', 15)));
 
   // ---------- toasts, dialogs, drawer ----------
   C.toast = function toast(msg, cls) {
@@ -258,8 +273,9 @@
     const reload = () => { S.params.offset = 0; C.refresh(); };
     let timer;
     const controls = items.map((f) => f.type === 'search'
-      ? h('input', { class: 'fsearch', type: 'search', placeholder: f.placeholder, value: S.params[f.key] || '', 'data-fkey': f.key, 'aria-label': f.placeholder,
-        oninput: (e) => { clearTimeout(timer); const v = e.target.value; timer = setTimeout(() => { S.params[f.key] = v.trim(); S.params._focus = f.key; reload(); }, 300); } })
+      ? C.searchBox(h('input', { class: 'fsearch', type: 'search', placeholder: f.placeholder, value: S.params[f.key] || '', 'data-fkey': f.key, 'aria-label': f.placeholder,
+        oninput: (e) => { clearTimeout(timer); const v = e.target.value; timer = setTimeout(() => { S.params[f.key] = v.trim(); S.params._focus = f.key; reload(); }, 300); } }),
+        (v) => { clearTimeout(timer); S.params[f.key] = String(v).trim(); reload(); })
       : h('label', { class: 'fsel' }, h('span', {}, f.label), h('select', { onchange: (e) => { S.params[f.key] = e.target.value; reload(); } },
         f.options.map(([v, t]) => h('option', { value: v, selected: String(v) === String(S.params[f.key] || '') }, t)))));
     const sortSel = sorts ? h('label', { class: 'fsel sort' }, h('span', {}, 'Sort'), h('select', { onchange: (e) => { S.params.sort = e.target.value; reload(); } }, sorts.map(([k, t]) => h('option', { value: k, selected: k === (S.params.sort || sorts[0][0]) }, t)))) : null;
@@ -274,25 +290,28 @@
     const P = S.params;
     let a = P.dfrom ? new Date(`${P.dfrom}T00:00:00`) : null; let b = P.dto ? new Date(`${P.dto}T00:00:00`) : null;
     if (a && b && a > b) [a, b] = [b, a];
-    return { from: a ? a.toISOString() : '', to: b ? new Date(b.getFullYear(), b.getMonth(), b.getDate() + 1).toISOString() : '', train_no: (P.dtrain || '').trim(), date_by: P.dby || '' }; // the "to" day is included
+    return { from: a ? a.toISOString() : '', to: b ? new Date(b.getFullYear(), b.getMonth(), b.getDate() + 1).toISOString() : '', train_no: (P.dtrain || '').trim(), mnvr: (P.dmnvr || '').trim(), date_by: P.dby || '' }; // the "to" day is included
   };
-  /** A train number (exact) and a date range with real date pickers, plus quick ranges. by = what the dates are about (recorded / delivered / flagged). */
-  C.dateTrainBar = function ({ trains, by, id }) {
+  /** A train number, an M-NVR (unique id, number or name) and a date range with real date pickers, plus quick ranges. by = what the dates are about (recorded / delivered / flagged). */
+  C.dateTrainBar = function ({ trains, mnvrs, by, id }) {
     const P = S.params; const reload = () => { P.offset = 0; C.refresh(); };
-    const active = !!(P.dfrom || P.dto || (P.dtrain || '').trim());
+    const active = !!(P.dfrom || P.dto || (P.dtrain || '').trim() || (P.dmnvr || '').trim());
     const listId = `${id || 'x'}-trains`;
     const dateIn = (key, text) => h('label', { class: 'fsel' }, h('span', {}, text),
       h('input', { type: 'date', value: P[key] || '', max: key === 'dfrom' && P.dto ? P.dto : undefined, min: key === 'dto' && P.dfrom ? P.dfrom : undefined, onchange: (e) => { P[key] = e.target.value; reload(); } }));
     const quick = (text, days) => h('button', { class: `btn sm ${P.dto === ymd(new Date()) && P.dfrom === ymd(new Date(Date.now() - days * 86400000)) ? 'primary' : ''}`, type: 'button',
       onclick: () => { P.dfrom = ymd(new Date(Date.now() - days * 86400000)); P.dto = ymd(new Date()); reload(); } }, text);
     return h('div', { class: 'filterbar searchbar' },
-      h('label', { class: 'fsel grow' }, h('span', {}, 'Train number (exact)'),
-        h('input', { class: 'fsearch', type: 'search', list: listId, autocomplete: 'off', placeholder: 'e.g. 12301', 'aria-label': 'Train number', value: P.dtrain || '', onchange: (e) => { P.dtrain = e.target.value; reload(); } })),
+      h('label', { class: 'fsel grow' }, h('span', {}, 'Train no.'),
+        C.searchBox(h('input', { class: 'fsearch', type: 'search', list: listId, autocomplete: 'off', placeholder: '12301', 'aria-label': 'Train number', value: P.dtrain || '', onchange: (e) => { P.dtrain = e.target.value; reload(); } }), (v) => { P.dtrain = v; reload(); })),
       h('datalist', { id: listId }, (trains || []).map((t) => h('option', { value: String(t).split(' ')[0] }, t))),
+      h('label', { class: 'fsel grow mnvr' }, h('span', {}, 'M-NVR'),
+        C.searchBox(h('input', { class: 'fsearch', type: 'search', list: `${listId}-m`, autocomplete: 'off', placeholder: 'id, no. or name', 'aria-label': 'M-NVR id, number or name', title: "The M-NVR's unique id (M-3F9A2C-0007), its number in the train (7 or M07) or part of its name", value: P.dmnvr || '', onchange: (e) => { P.dmnvr = e.target.value; reload(); } }), (v) => { P.dmnvr = v; reload(); })),
+      h('datalist', { id: `${listId}-m` }, (mnvrs || []).map((m) => h('option', { value: m.uid }, m.name))),
       by ? h('label', { class: 'fsel' }, h('span', {}, 'Date of'), h('select', { onchange: (e) => { P.dby = e.target.value; if (P.dfrom || P.dto) reload(); } }, by.map(([v, t]) => h('option', { value: v, selected: v === (P.dby || by[0][0]) }, t)))) : null,
       dateIn('dfrom', 'From date'), dateIn('dto', 'To date'),
       h('div', { class: 'quick' }, quick('Today', 0), quick('7 days', 6), quick('30 days', 29)),
-      active ? h('button', { class: 'btn sm', type: 'button', onclick: () => { delete P.dfrom; delete P.dto; delete P.dtrain; reload(); } }, C.ic('x', 13), 'Reset search') : null);
+      active ? h('button', { class: 'btn sm', type: 'button', onclick: () => { delete P.dfrom; delete P.dto; delete P.dtrain; delete P.dmnvr; reload(); } }, C.ic('x', 13), 'Reset search') : null);
   };
 
   // ---------- retention helpers: days left, SHA-256, copy, CSV ----------

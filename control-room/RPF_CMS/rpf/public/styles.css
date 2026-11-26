@@ -2704,15 +2704,15 @@ td.clip {
 .sd.post { background: var(--blue, #2563eb); }
 
 /* ---- retention register: tiles, days-left bar, checksum verdict ---- */
-.tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 10px; }
-.tile { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card, #fff); color: inherit; cursor: pointer; text-align: left; font: inherit; }
-.tile b { font-size: 24px; line-height: 1.1; }
-.tile span { font-size: 12px; color: var(--muted); }
-.tile:hover { background: var(--hover, rgba(0,0,0,.04)); }
-.tile.on { border-color: var(--brand-2, #2563eb); box-shadow: inset 0 0 0 1px var(--brand-2, #2563eb); }
-.tile.red b { color: var(--red, #c62828); }
-.tile.amber b { color: var(--amber, #d97706); }
-.tile.indigo b { color: var(--indigo, #4f46e5); }
+.rtiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 12px; }
+.rtile { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: inherit; cursor: pointer; text-align: left; font: inherit; }
+.rtile b { font-size: 24px; line-height: 1.1; }
+.rtile span { font-size: 12px; color: var(--muted); }
+.rtile:hover { background: var(--hover, rgba(0,0,0,.04)); }
+.rtile.on { border-color: var(--brand-2, #2563eb); box-shadow: inset 0 0 0 1px var(--brand-2, #2563eb); }
+.rtile.red b { color: var(--red, #c62828); }
+.rtile.amber b { color: var(--amber, #d97706); }
+.rtile.indigo b { color: var(--indigo, #4f46e5); }
 .dl { display: flex; flex-direction: column; gap: 2px; min-width: 96px; }
 .dl b { font-size: 22px; line-height: 1.1; }
 .dl small { color: var(--muted); font-size: 11.5px; }
@@ -2740,4 +2740,52 @@ tr.pend td:first-child { box-shadow: inset 4px 0 0 var(--amber, #d97706); }
 .tev.warn .tb > b { color: var(--amber, #d97706); }
 .tev .tbody { font-size: 12.5px; word-break: break-word; }
 .tev .tm { font-size: 11.5px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-@media (max-width: 900px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 900px) { .rtiles { grid-template-columns: repeat(2, 1fr); } }
+
+/* ---- retention register table: wide, so it scrolls sideways instead of squeezing every column ---- */
+.table-wrap > table.reg { min-width: 1180px; table-layout: auto; }
+table.reg th { white-space: nowrap; }
+table.reg td { font-size: 13px; line-height: 1.35; }
+table.reg td:nth-child(1) { width: 64px; }
+table.reg td:nth-child(2) { min-width: 190px; }
+table.reg td:nth-child(3) { width: 120px; }
+table.reg td:nth-child(4) { min-width: 250px; }
+table.reg td:nth-child(5) { min-width: 110px; }
+table.reg td:nth-child(6) { min-width: 180px; max-width: 260px; }
+table.reg td:nth-child(7) { min-width: 120px; }
+table.reg td:nth-child(8) { min-width: 120px; }
+table.reg .shaline { margin: 3px 0; }
+.rtile { min-height: 62px; justify-content: center; }
+.rtile.on { background: var(--hover, rgba(37,99,235,.06)); }
+
+/* ---- search bar: the train / M-NVR boxes are short, they no longer stretch over the row ---- */
+.searchbar .fsel.grow { flex: 0 0 auto; }
+.searchbar .fsel.grow input { width: 140px; min-width: 0; }
+.searchbar .fsel.mnvr input { width: 170px; }
+.searchbar { align-items: flex-end; }
+/* the box inside a label is laid out in a column: it must not stretch in height (flex-basis would mean 220px tall) */
+.searchbar .fsel .fsearch, .fsel.grow .fsearch { flex: 0 0 auto; min-width: 0; height: 34px; align-self: stretch; }
+
+/* search box = the input + its own search button, attached on the right (outside the input, not drawn inside it) */
+.sbox { position: static; display: inline-flex; align-items: stretch; min-width: 0; align-self: flex-end; }
+.sbox .fsearch { padding-right: 10px; border-top-right-radius: 0; border-bottom-right-radius: 0; margin: 0; }
+.sbox .sbtn { position: static; transform: none; flex: 0 0 auto; width: 38px; height: 34px; display: inline-flex; align-items: center; justify-content: center; padding: 0; margin: 0 0 0 -1px;
+  border: 1px solid var(--accent); border-radius: 0 8px 8px 0; background: var(--accent); color: var(--accent-ink, #fff); cursor: pointer; }
+.sbox .sbtn:hover { filter: brightness(1.1); }
+.sbox .sbtn:focus-visible { outline: 2px solid var(--brand-2, var(--blue)); outline-offset: 1px; }
+.sbox .sbtn svg { pointer-events: none; }
+.fsel .sbox { display: flex; align-self: auto; }
+.fsel .sbox .fsearch { flex: 1 1 auto; }
+.filterbar > .sbox, .searchbar > .sbox { flex: 1 1 260px; }
+.filterbar > .sbox .fsearch, .searchbar > .sbox .fsearch { flex: 1 1 auto; width: 100%; }
+
+/* incident drawer: minimal, one line per item */
+.card2.slim .item.line1, .item.line1 { display: flex; align-items: center; gap: 8px; padding: 6px 0; min-width: 0; }
+.item.line1 .err-line { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item.line1 b { white-space: nowrap; }
+.item.line1 .spacer { flex: 1 1 auto; }
+.feed.slim .fe { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; min-width: 0; }
+.feed.slim .fe b { flex: 0 1 auto; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feed.slim .fe .fb1 { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.feed.slim .fe .fw1 { margin-left: auto; flex: 0 0 auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.item.line1 .err-line.muted { color: var(--muted); }

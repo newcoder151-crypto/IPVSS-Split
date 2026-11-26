@@ -41,7 +41,7 @@ const TRAIN_REQUEST_SELECT = `
 /** Trains this post can ask about: the train numbers reported by M-NVR units in the post's zone, with those units and their cameras. */
 async function trainsInZone(zoneId) {
   const { rows } = await pool.query(
-    `SELECT n.train_no, n.id AS nvr_id, n.name AS nvr_name, COALESCE(n.unit_no, n.id) AS unit_no,
+    `SELECT n.train_no, n.id AS nvr_id, n.mnvr_uid, n.name AS nvr_name, COALESCE(n.unit_no, n.id) AS unit_no,
             (n.last_seen > now() - make_interval(secs => 60)) AS online, n.last_seen,
             c.id AS camera_id, COALESCE(c.mnvr_camera_id, c.id) AS camera_no, c.name AS camera_name, c.mount_position
        FROM nvr_unit n
@@ -60,6 +60,7 @@ async function trainsInZone(zoneId) {
     if (!t.units.has(r.nvr_id))
       t.units.set(r.nvr_id, {
         nvr_id: r.nvr_id,
+        mnvr_uid: r.mnvr_uid,
         name: r.nvr_name,
         unit_no: r.unit_no,
         online: r.online,

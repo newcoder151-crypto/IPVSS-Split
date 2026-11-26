@@ -5,7 +5,7 @@
   const V = C.views;
 
   const age = (sec) => { sec = Math.round(sec || 0); return sec < 3600 ? `${Math.max(1, Math.round(sec / 60))} min` : sec < 172800 ? `${Math.round(sec / 3600)} h` : `${Math.round(sec / 86400)} days`; };
-  const nvrCell = (r) => [`${r.camera_name || 'camera n/a'} / ${r.nvr_name}`, r.train_no ? h('div', { class: 'muted' }, r.train_no) : null];
+  const nvrCell = (r) => [`${r.camera_name || 'camera n/a'} / ${r.nvr_name}`, r.train_no ? h('div', { class: 'muted' }, r.train_no) : null, r.mnvr_uid ? h('div', { class: 'muted mono' }, r.mnvr_uid) : null];
 
   // =========================================================================================
   // Dashboard
@@ -343,7 +343,7 @@
     return C.splitView('footage', {
       head: head('Delivered footage', C.zoneSelect()),
       emptyPane: 'Select a recording to watch it here.',
-      list: (st) => h('div', {}, C.dateTrainBar({ id: 'footage', trains: d.trains, by: [['recorded', 'Recorded'], ['delivered', 'Delivered']] }), C.groupedList('footage', d.rows, FOOT_GROUP, (rs) => table(['#', 'Post', 'Camera / train', 'Recorded', 'Flags', ''],
+      list: (st) => h('div', {}, C.dateTrainBar({ id: 'footage', trains: d.trains, mnvrs: d.mnvrs, by: [['recorded', 'Recorded'], ['delivered', 'Delivered']] }), C.groupedList('footage', d.rows, FOOT_GROUP, (rs) => table(['#', 'Post', 'Camera / train', 'Recorded', 'Flags', ''],
         rs.map((f) => h('tr', { class: `click ${st.current === f.id ? 'sel' : ''}`, 'data-id': f.id, onclick: () => showFootage(st, f) }, h('td', {}, f.id, h('div', { class: 'muted' }, `req #${f.request_id}`)), h('td', {}, f.post_name), h('td', {}, nvrCell(f)),
           h('td', {}, fmtShort(f.start_time), h('div', { class: 'muted' }, `${f.duration_s ? fmtDur(f.duration_s) : ''} - ${fmtSize(f.file_size_bytes)}`)), h('td', {}, +f.active_flags ? badge(`${f.active_flags} flagged`, 'amber') : h('span', { class: 'muted' }, '30-day')),
           h('td', {}, h('button', { class: 'btn sm primary' }, 'Play')))), 'No footage matches - widen the search above, or none has been delivered yet.')), pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); })),
@@ -387,7 +387,7 @@
     return C.splitView('evidence', {
       head: head('Evidence - flagged recordings', C.zoneSelect(), chips([['active', 'Held'], ['released', 'Released'], ['', 'All']], S.params.estatus === undefined ? 'active' : S.params.estatus, (v) => { S.params.estatus = v; S.params.offset = 0; C.refresh(); }), h('span', { class: 'muted' }, `${fmtSize(d.archive_bytes)} archived on CMS`)),
       emptyPane: 'Select a flagged recording to play it and see what the officer entered.',
-      list: (st) => h('div', {}, C.dateTrainBar({ id: 'evidence', trains: d.trains, by: [['recorded', 'Recorded'], ['flagged', 'Flagged']] }), C.groupedList('evidence', d.rows, EVID_GROUP, (rs) => table(['#', 'Flagged', 'Section', 'Kept', 'Copies'],
+      list: (st) => h('div', {}, C.dateTrainBar({ id: 'evidence', trains: d.trains, mnvrs: d.mnvrs, by: [['recorded', 'Recorded'], ['flagged', 'Flagged']] }), C.groupedList('evidence', d.rows, EVID_GROUP, (rs) => table(['#', 'Flagged', 'Section', 'Kept', 'Copies'],
         rs.map((f) => h('tr', { class: `click ${st.current === f.id ? 'sel' : ''}`, 'data-id': f.id, 'data-ref': `evidence_flag:${f.id}`, onclick: () => showFlag(st, f) }, h('td', {}, f.id, f.incident_id ? h('div', { class: 'muted' }, `inc #${f.incident_id}`) : null), h('td', {}, fmtShort(f.flagged_at), h('div', { class: 'muted' }, `${f.flagged_by_username} - ${f.post_name}`)),
           h('td', {}, sectionText(f), h('div', { class: 'muted' }, `${f.camera_name} / ${f.nvr_name}`), h('div', { class: 'muted' }, camOf(f))), h('td', {}, C.keptChip(f), f.retention === 'permanent' ? null : h('div', { class: 'muted' }, `until ${C.fmtDate(f.retain_to)}`), f.ext_status === 'pending' ? h('div', {}, badge('extension pending', 'amber')) : null), h('td', {}, storageBadges(f)))),
         'Nothing matches - widen the search above, or nothing has been flagged.')), pager(+d.total, limit, off, (o) => { S.params.offset = o; C.refresh(); })),
@@ -502,7 +502,7 @@
     return h('div', {},
       head('Retention register', C.zoneSelect(), h('button', { class: 'btn', disabled: !d.rows.length, onclick: () => verifyAll(d.rows) }, C.ic('shield', 14), 'Verify checksums'), h('button', { class: 'btn', disabled: !d.rows.length, onclick: () => exportRetention(query) }, C.ic('download', 14), 'Export CSV')),
       h('div', { class: 'muted mb' }, `${fmtSize(d.archive_bytes)} archived on CMS. How it works: the post asks for a longer retention from its Retention tab - you approve, change the date, or reject here - the post is told. Reminders go to both of you 30, 7 and 1 day before a retention ends.`),
-      tiles, C.dateTrainBar({ id: 'retention', trains: d.trains, by: [['recorded', 'Recorded'], ['flagged', 'Flagged']] }), bar,
+      tiles, C.dateTrainBar({ id: 'retention', trains: d.trains, mnvrs: d.mnvrs, by: [['recorded', 'Recorded'], ['flagged', 'Flagged']] }), bar,
       table(['Flag', 'Recording', 'Days left', 'SHA-256 and check', 'Stored', 'Why it is kept', 'Extension', ''],
         d.rows.map((f) => h('tr', { class: `click ${f.ext_status === 'pending' ? 'pend' : ''}`, 'data-ref': `evidence_flag:${f.id}`, onclick: () => openFlag(f.id) },
           h('td', {}, `#${f.id}`, h('div', { class: 'muted' }, f.post_name), f.incident_id ? h('div', { class: 'muted' }, `inc #${f.incident_id}`) : null),

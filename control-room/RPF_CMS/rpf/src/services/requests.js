@@ -6,7 +6,7 @@ const FOOTAGE_SELECT = `
          f.file_size_bytes, f.delivered_at, f.start_time, f.end_time, f.duration_s, f.segment_count,
          r.incident_id, r.reason AS request_reason,
          COALESCE(f.file_name, regexp_replace(f.storage_path, '^.*/', '')) AS file_name,
-         f.train_request_id, COALESCE(f.train_no, n.train_no) AS train_no, COALESCE(f.unit_no, n.unit_no, n.id) AS unit_no, COALESCE(f.camera_no, c.mnvr_camera_id, c.id) AS camera_no,
+         f.train_request_id, COALESCE(f.train_no, n.train_no) AS train_no, n.mnvr_uid, COALESCE(f.unit_no, n.unit_no, n.id) AS unit_no, COALESCE(f.camera_no, c.mnvr_camera_id, c.id) AS camera_no,
          NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.entity = 'delivered_footage' AND a.entity_id = f.id
                       AND a.action IN ('footage.view', 'footage.download', 'footage.download.section')) AS is_new,
          r.post_id, p.name AS post_name, p.zone_id,

@@ -113,7 +113,18 @@
     }
     if (!res.ok)
       throw new Error((data && data.error) || `request failed (${res.status})`);
-    return data;
+    return tidyNames(data);
+  }
+  // A unit that was removed and registered again keeps its old row under the name "<name> [removed #2]": show the plain name.
+  const REMOVED_TAG = / \[removed #\d+\]$/;
+  function tidyNames(x) {
+    if (Array.isArray(x)) x.forEach(tidyNames);
+    else if (x && typeof x === "object")
+      for (const k of Object.keys(x)) {
+        if ((k === "nvr_name" || k === "name") && typeof x[k] === "string") x[k] = x[k].replace(REMOVED_TAG, "");
+        else if (x[k] && typeof x[k] === "object") tidyNames(x[k]);
+      }
+    return x;
   }
   const qs = (o) => {
     const p = new URLSearchParams();
@@ -158,6 +169,7 @@
   };
   // ---------- icons (inline SVG, no external files) -------------------------
   const ICONS = {
+    search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
     sun: '<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/>',
     moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/>',
     bell: '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
@@ -1183,7 +1195,7 @@
           { class: "card table-wrap" },
           h(
             "table",
-            {},
+            opts.cls ? { class: opts.cls } : {},
             h(
               "thead",
               {},
@@ -1226,6 +1238,25 @@
     }
     return Date.now() - t <= { "24h": 864e5, "7d": 6048e5, "30d": 2592e6 }[key];
   };
+  /** A search box with a magnifier button: click it (or press Enter) to search. apply(text) runs the search. */
+  const searchBox = (input, apply) =>
+    h(
+      "span",
+      { class: "sbox" },
+      input,
+      h(
+        "button",
+        {
+          class: "sbtn",
+          type: "button",
+          title: "Search",
+          "aria-label": "Search",
+          onmousedown: (e) => e.preventDefault(),
+          onclick: () => apply(input.value),
+        },
+        ic("search", 15),
+      ),
+    );
   const uniq = (rows, fn) => [...new Set(rows.map(fn).filter(Boolean))].sort();
   const textFilter = (fn, placeholder) => ({
     key: "q",
@@ -1233,10 +1264,13 @@
     placeholder,
     test: (row, v) => !v || fn(row).toLowerCase().includes(v),
   });
-  const selFilter = (key, label, options, test) => ({
+  // section = { of: (value) => id of the section the value belongs to (or null), cur: () => the section shown now, go: (id) => switch to it }:
+  // picking "Acknowledged" while the Unacknowledged section is open (or "Closed" while Open incidents is) takes you to the right section.
+  const selFilter = (key, label, options, test, section) => ({
     key,
     label,
     options,
+    section,
     test: (row, v) => !v || test(row, v),
   });
   const byTime =
@@ -1377,17 +1411,21 @@
     }
     const controls = filters.map((f) =>
       f.type === "search"
-        ? h("input", {
-            class: "fsearch",
-            type: "search",
-            placeholder: f.placeholder,
-            value: st[f.key] || "",
-            "aria-label": f.placeholder,
-            oninput: (e) => {
-              st[f.key] = e.target.value.trim().toLowerCase();
+        ? (() => {
+            const apply = (v) => {
+              st[f.key] = String(v).trim().toLowerCase();
               paint();
-            },
-          })
+            };
+            const inp = h("input", {
+              class: "fsearch",
+              type: "search",
+              placeholder: f.placeholder,
+              value: st[f.key] || "",
+              "aria-label": f.placeholder,
+              oninput: (e) => apply(e.target.value),
+            });
+            return searchBox(inp, apply);
+          })()
         : h(
             "label",
             { class: "fsel" },
@@ -1397,6 +1435,12 @@
               {
                 onchange: (e) => {
                   st[f.key] = e.target.value;
+                  const to = f.section && f.section.of(e.target.value);
+                  if (to && to !== f.section.cur()) {
+                    f.section.go(to);
+                    refresh();
+                    return;
+                  }
                   paint();
                 },
               },
@@ -1539,6 +1583,11 @@
           ["yes", "Yes"],
         ],
         (a, v) => (v === "yes" ? !!a.ack_at : !a.ack_at),
+        {
+          of: (v) => (v === "yes" ? "acked" : v === "no" ? "unacked" : null),
+          cur: () => S.alertState,
+          go: (id) => (S.alertState = id),
+        },
       ),
       selFilter(
         "inc",
@@ -1603,6 +1652,11 @@
           ["closed", "Closed"],
         ],
         (i, v) => i.status === v,
+        {
+          of: (v) => (v === "closed" ? "closed" : v === "open" || v === "under_review" ? "active" : null),
+          cur: () => S.incState,
+          go: (id) => (S.incState = id),
+        },
       ),
       selFilter(
         "src",
@@ -1671,7 +1725,7 @@
   };
   const trainOf = (f) =>
     f.train_no ? `Train ${f.train_no}` : "No train number";
-  const unitOf = (f) => `${trainOf(f)} - M-NVR ${pad2(f.unit_no)}`;
+  const unitOf = (f) => `${trainOf(f)} - M-NVR ${pad2(f.unit_no)}${f.mnvr_uid ? ` (${f.mnvr_uid})` : ""}`;
   const camOf = (f) =>
     `${unitOf(f)} - C${pad2(f.camera_no)} ${f.camera_name || ""}`.trim();
   const SUB_GROUPS = [
@@ -1836,7 +1890,7 @@
   const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const srvState = (name) => {
     const st = (S.f[name] = S.f[name] || {});
-    return (st.srv = st.srv || { from: "", to: "", train: "", by: "" });
+    return (st.srv = st.srv || { from: "", to: "", train: "", mnvr: "", by: "" });
   };
   /** Query-string parts for /api/footage and /api/flags. The browser turns the officer's calendar days into exact timestamps. */
   function srvParams(name) {
@@ -1848,6 +1902,7 @@
       from: a ? a.toISOString() : "",
       to: b ? new Date(b.getFullYear(), b.getMonth(), b.getDate() + 1).toISOString() : "", // the "to" day is included
       train_no: s.train.trim(),
+      mnvr: (s.mnvr || "").trim(),
       date_by: s.by || "",
     };
   }
@@ -1857,7 +1912,7 @@
    */
   function searchBar(name, { trains, by }) {
     const s = srvState(name);
-    const active = !!(s.from || s.to || s.train.trim());
+    const active = !!(s.from || s.to || s.train.trim() || (s.mnvr || "").trim());
     const dateIn = (key, text) =>
       h(
         "label",
@@ -1894,20 +1949,56 @@
       h(
         "label",
         { class: "fsel grow" },
-        h("span", {}, "Train number (exact)"),
-        h("input", {
-          class: "fsearch",
-          type: "search",
-          list: `${name}-trains`,
-          autocomplete: "off",
-          placeholder: "e.g. 12301",
-          "aria-label": "Train number",
-          value: s.train,
-          onchange: (e) => {
-            s.train = e.target.value;
+        h("span", {}, "Train no."),
+        searchBox(
+          h("input", {
+            class: "fsearch",
+            type: "search",
+            list: `${name}-trains`,
+            autocomplete: "off",
+            placeholder: "12301",
+            "aria-label": "Train number",
+            value: s.train,
+            onchange: (e) => {
+              s.train = e.target.value;
+              refresh();
+            },
+          }),
+          (v) => {
+            s.train = v;
             refresh();
           },
-        }),
+        ),
+      ),
+      h(
+        "label",
+        { class: "fsel grow mnvr" },
+        h("span", {}, "M-NVR"),
+        searchBox(
+          h("input", {
+            class: "fsearch",
+            type: "search",
+            list: `${name}-mnvrs`,
+            autocomplete: "off",
+            placeholder: "id, no. or name",
+            "aria-label": "M-NVR id, number or name",
+            title: "The M-NVR's unique id (M-3F9A2C-0007), its number in the train (7 or M07) or part of its name",
+            value: s.mnvr || "",
+            onchange: (e) => {
+              s.mnvr = e.target.value;
+              refresh();
+            },
+          }),
+          (v) => {
+            s.mnvr = v;
+            refresh();
+          },
+        ),
+      ),
+      h(
+        "datalist",
+        { id: `${name}-mnvrs` },
+        (mnvrList || []).map((m) => h("option", { value: m.uid }, m.name)),
       ),
       h(
         "datalist",
@@ -1944,6 +2035,7 @@
                 s.from = "";
                 s.to = "";
                 s.train = "";
+                s.mnvr = "";
                 refresh();
               },
             },
@@ -1962,7 +2054,12 @@
           `Showing the newest ${MAX_ROWS}. Pick dates or a train number above to narrow it down.`,
         )
       : null;
-  const trainChoices = () => api("/api/footage/trains").catch(() => []);
+  let mnvrList = []; // the M-NVR choices of the search bars (filled together with the train choices)
+  const trainChoices = async () => {
+    const [t, m] = await Promise.all([api("/api/footage/trains").catch(() => []), api("/api/footage/mnvrs").catch(() => [])]);
+    mnvrList = m;
+    return t;
+  };
 
   // ---------- retention helpers: days left, SHA-256 checksums, copy, CSV ------------------------------------------------------------
   /** "kept for life", or the days left coloured by urgency. */
@@ -2285,8 +2382,8 @@
         h("h3", {}, "SHA-256 checksums"),
         h("div", {}, checkChip(f), checkLines(f)),
         shaLine("Delivered recording (whole file)", f.footage_sha256, true),
-        shaLine(f.section_start_s == null ? "CMS copy" : "CMS copy (the section)", f.archive_sha256, true) || h("div", { class: "muted" }, "No CMS archive copy yet"),
-        shaLine(f.section_start_s == null ? "Copy at this post" : "Copy at this post (the section)", f.local_sha256, true),
+        shaLine(f.section_start_s == null || f.copy_kind === "whole" ? "CMS copy" : "CMS copy (the section)", f.archive_sha256, true) || h("div", { class: "muted" }, "No CMS archive copy yet"),
+        shaLine(f.section_start_s == null || f.copy_kind === "whole" ? "Copy at this post" : "Copy at this post (the section)", f.local_sha256, true),
       ),
       h("div", { class: "shablock" }, h("h3", {}, "History"), hist),
       h(
@@ -2351,6 +2448,11 @@
       );
       if (!["unacked", "acked"].includes(S.alertState))
         S.alertState = "unacked";
+      // a leftover "Acknowledged" filter that contradicts the section shown would hide every row: drop it
+      {
+        const f = S.f.alerts;
+        if (f && ((f.ack === "yes" && S.alertState === "unacked") || (f.ack === "no" && S.alertState === "acked"))) f.ack = "";
+      }
       const chips = subTabs(
         [
           ["unacked", "Unacknowledged", sum.unacked, "red"],
@@ -2505,6 +2607,10 @@
         "/api/incidents" + qs({ status: S.incState, limit: 500 }),
       );
       if (!["active", "closed"].includes(S.incState)) S.incState = "active";
+      {
+        const f = S.f.incidents; // same for the Status filter
+        if (f && f.status && ((f.status === "closed") !== (S.incState === "closed"))) f.status = "";
+      }
       const sumI = await api("/api/alerts/summary");
       const chips = subTabs(
         [
@@ -2850,10 +2956,10 @@
         refresh();
       };
       const tile = (text, n, cls, on, onclick, hint) =>
-        h("button", { class: `tile ${cls} ${on ? "on" : ""}`, title: hint || "", onclick }, h("b", {}, String(n)), h("span", {}, text));
+        h("button", { class: `rtile ${cls} ${on ? "on" : ""}`, title: hint || "", onclick }, h("b", {}, String(n)), h("span", {}, text));
       const tiles = h(
         "div",
-        { class: "tiles" },
+        { class: "rtiles" },
         tile("Held", rows.length, "", !st.soon && !st.ext && !st.ret, () => pick({}), "Everything kept beyond the 30-day policy"),
         tile("Waiting for CMS", asked, asked ? "amber" : "", st.ext === "pending", () => pick({ ext: "pending" }), "You asked for a longer retention"),
         tile("End within 7 days", soon7, soon7 ? "red" : "", st.soon === "7", () => pick({ soon: "7" }), "Ask for longer now or they are released"),
@@ -2912,7 +3018,7 @@
                     "td",
                     {},
                     h("strong", {}, trainOf(f)),
-                    h("div", { class: "muted" }, `M-NVR ${pad2(f.unit_no)} - C${pad2(f.camera_no)} ${f.camera_name || ""}`.trim()),
+                    h("div", { class: "muted" }, `M-NVR ${pad2(f.unit_no)}${f.mnvr_uid ? ` (${f.mnvr_uid})` : ""} - C${pad2(f.camera_no)} ${f.camera_name || ""}`.trim()),
                     h("div", { class: "muted" }, fmtShort(f.footage_start || f.window_start)),
                     h("div", { class: "muted" }, `${f.section_start_s != null ? `${fmtDur(f.section_start_s)} - ${fmtDur(f.section_end_s)}` : "whole file"}, ${f.format}, ${fmtSize(f.archive_size_bytes || f.local_size_bytes || f.file_size_bytes || 0)}`),
                   ),
@@ -2942,7 +3048,7 @@
                   ),
                 ),
               ),
-              { empty: "Nothing is being kept beyond the 30-day policy." },
+              { empty: "Nothing is being kept beyond the 30-day policy.", cls: "reg" },
             ),
           empty: h("div", { class: "card empty" }, ic("clock", 24), h("div", {}, "No retained recordings match.")),
         }),
@@ -3896,21 +4002,24 @@
   }
   function activityFeed(items) {
     if (!items.length) return emptyHint("clock", "No activity yet.");
+    // one line each: identical events one after another become "title x16"; only notes keep their text (and then only the first line)
+    const rows = [];
+    for (const x of items) {
+      const title = x.tone === "note" ? x.title : shortReason(x.title) === x.title ? x.title : shortReason(x.title);
+      const last = rows[rows.length - 1];
+      if (last && last.title === title && last.tone === x.tone && x.tone !== "note") last.n += 1;
+      else rows.push({ ...x, title, n: 1 });
+    }
     return h(
       "div",
-      { class: "feed" },
-      items.map((x) =>
+      { class: "feed slim" },
+      rows.map((x) =>
         h(
           "div",
-          { class: `fe ${x.tone || ""}` },
-          h("b", {}, x.title),
-          x.body ? h("div", { class: "fb" }, x.body) : null,
-          h(
-            "div",
-            { class: "fw" },
-            `${fmtTime(x.at)} - ${x.who || "system"} `,
-            x.side ? h("span", { class: `sd ${x.side}` }, SIDE_TEXT[x.side]) : null,
-          ),
+          { class: `fe ${x.tone || ""}`, title: x.body || "" },
+          h("b", {}, x.n > 1 ? `${x.title} x${x.n}` : x.title),
+          x.tone === "note" && x.body ? h("span", { class: "fb1" }, String(x.body).split("\n")[0]) : null,
+          h("span", { class: "fw1" }, `${fmtTime(x.at)}${x.who ? ` - ${x.who}` : ""}`),
         ),
       ),
     );
@@ -4419,39 +4528,65 @@
           : null,
       );
 
-    const filesCard = () =>
-      trail.footage.length
-        ? h(
+    // Minimal: one line per delivered camera; the cameras that could not be delivered are grouped by reason, one line per reason.
+    const filesCard = () => {
+      if (!trail.footage.length) return null;
+      const done = trail.footage.filter((f) => f.footage_id);
+      const notDone = new Map();
+      for (const f of trail.footage.filter((x) => !x.footage_id)) {
+        const k = f.status === "failed" || f.failure_reason ? shortReason(f.failure_reason) : label(f.status);
+        if (!notDone.has(k)) notDone.set(k, { failed: f.status === "failed", cams: [], raw: f.failure_reason });
+        notDone.get(k).cams.push(f.camera_name || `camera ${f.camera_no || ""}`);
+      }
+      return h(
+        "div",
+        { class: "card2 slim" },
+        h("h4", {}, `Footage: ${trail.summary.cameras_ready} of ${trail.summary.cameras_total} cameras ready`),
+        done.map((f) => {
+          const full = footage.find((x) => x.id === f.footage_id);
+          return h(
             "div",
-            { class: "card2" },
-            h("h4", {}, `On file for this incident (${trail.summary.files} delivered, ${trail.summary.cameras_ready} of ${trail.summary.cameras_total} cameras ready)`),
-            trail.footage.map((f) => {
-              const full = f.footage_id ? footage.find((x) => x.id === f.footage_id) : null;
-              return h(
-                "div",
-                { class: "item" },
-                h("b", {}, f.footage_id ? `Camera ${f.camera_no || ""} ${f.camera_name || ""}`.replace(/\s+/g, " ").trim() : f.camera_name),
-                " ",
-                f.footage_id ? badge("delivered", "green") : badge(label(f.status), f.status === "failed" ? "red" : "teal"),
-                f.flag ? [" ", badge(f.flag.retention === "permanent" ? "kept for life" : `kept until ${fmtDate(f.flag.retain_to)}`, "indigo")] : null,
-                f.footage_id
-                  ? h("div", { class: "muted" }, `${fmtShort(f.start_time)} to ${fmtShort(f.end_time)} - ${f.format}, ${fmtSize(f.file_size_bytes)}`)
-                  : h("div", { class: "muted" }, f.failure_reason || "not delivered yet"),
-                f.footage_id ? shaLine("SHA-256", f.sha256) : null,
-                f.views
-                  ? h("div", { class: "muted" }, `viewed ${f.views.count} time${f.views.count === 1 ? "" : "s"}${f.views.by.length ? ` by ${f.views.by.join(", ")}` : ""}, last ${ago(f.views.last)}`)
-                  : f.footage_id ? h("div", { class: "muted" }, "not viewed yet") : null,
-                full ? footageButtons(full, mine && !closed) : null,
-              );
-            }),
-          )
-        : null;
+            { class: "item line1" },
+            h("b", {}, `Camera ${f.camera_no || ""} ${f.camera_name || ""}`.replace(/\s+/g, " ").trim()),
+            badge("delivered", "green"),
+            f.flag ? badge(f.flag.retention === "permanent" ? "kept for life" : `kept until ${fmtDate(f.flag.retain_to)}`, "indigo") : null,
+            h("span", { class: "muted" }, `${fmtSize(f.file_size_bytes)}`),
+            h("span", { class: "spacer" }),
+            full ? footageButtons(full, mine && !closed) : null,
+          );
+        }),
+        [...notDone.entries()].map(([reason, g]) =>
+          h(
+            "div",
+            { class: "item line1", title: `${g.cams.join(", ")}${g.raw ? `\n\n${g.raw}` : ""}` },
+            badge(g.failed ? "failed" : reason, g.failed ? "red" : "teal"),
+            h("span", { class: "err-line" }, `${g.cams.length} camera${g.cams.length === 1 ? "" : "s"}${g.failed ? ` - ${reason}` : ""}`),
+          ),
+        ),
+      );
+    };
     const footageTab = () =>
       h(
         "div",
         {},
         filesCard(),
-        requestCards(trainReqs, mine),
+        // one line per footage request (the cameras are listed once, above; the Requests tab has the full card with Cancel)
+        trainReqs.length
+          ? h(
+              "div",
+              { class: "card2 slim" },
+              h("h4", {}, `Footage requests (${trainReqs.length})`),
+              trainReqs.map((t) =>
+                h(
+                  "div",
+                  { class: "item line1", title: t.failure_reason || "" },
+                  h("b", {}, `#${t.id} Train ${t.train_no}`),
+                  reqBadge(t.status),
+                  h("span", { class: "err-line muted" }, `${t.cameras_fulfilled || 0} of ${t.cameras_total || 0} cameras - ${fmtShort(t.window_start)} to ${fmtShort(t.window_end)}`),
+                ),
+              ),
+            )
+          : emptyHint("film", "No footage requested yet.", 'Use "Request footage" and give the train number.'),
         flags.length
           ? h(
               "div",
@@ -4460,21 +4595,10 @@
               flags.map((f) =>
                 h(
                   "div",
-                  { class: "item" },
-                  f.retention === "permanent"
-                    ? badge("for life", "indigo")
-                    : badge("timed", "blue"),
-                  " ",
-                  badge(
-                    ARCH_TEXT[f.archive_status] || f.archive_status,
-                    ARCH_CLS[f.archive_status],
-                  ),
-                  h(
-                    "div",
-                    {},
-                    `flag #${f.id} - footage #${f.footage_id}${f.section_start_s != null ? ` - ${fmtDur(f.section_start_s)} to ${fmtDur(f.section_end_s)}` : " - whole file"}`,
-                  ),
-                  h("div", { class: "muted" }, f.justification),
+                  { class: "item line1", title: f.justification || "" },
+                  f.retention === "permanent" ? badge("for life", "indigo") : badge("timed", "blue"),
+                  badge(ARCH_TEXT[f.archive_status] || f.archive_status, ARCH_CLS[f.archive_status]),
+                  h("span", { class: "err-line" }, `flag #${f.id} - footage #${f.footage_id}${f.section_start_s != null ? ` - ${fmtDur(f.section_start_s)} to ${fmtDur(f.section_end_s)}` : ""}`),
                 ),
               ),
             )

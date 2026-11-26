@@ -7,7 +7,7 @@ const ev = require('../../services/evidenceService');
 const { absPath, exists, mimeFor } = require('../../services/fsutil');
 const { serveFile } = require('../../services/mediaServe');
 const { audit } = require('../../services/audit');
-const { parseId, parseLimit, parseOffset, requireText, where, rangeFilter, trainFilter, searchFilter } = require('../../services/util');
+const { parseId, parseLimit, parseOffset, requireText, where, rangeFilter, trainFilter, mnvrFilter, searchFilter } = require('../../services/util');
 const { badRequest, notFound, unauthorized, wrap } = require('../../errors');
 const fs = require('fs');
 
@@ -34,7 +34,7 @@ async function heldElsewhere(ownerId) {
 
 const FOOTAGE_LIST = `
   SELECT f.id, f.video_request_id AS request_id, f.train_request_id, f.file_name, COALESCE(f.unit_no, n.unit_no, n.id) AS unit_no, COALESCE(f.camera_no, c.mnvr_camera_id, c.id) AS camera_no, r.incident_id, f.format, f.sha256, f.file_size_bytes, f.duration_s, f.start_time, f.end_time, f.segment_count, f.delivered_at,
-         p.id AS post_id, p.name AS post_name, p.zone_id, c.name AS camera_name, n.name AS nvr_name, COALESCE(f.train_no, n.train_no) AS train_no,
+         p.id AS post_id, p.name AS post_name, p.zone_id, c.name AS camera_name, n.name AS nvr_name, COALESCE(f.train_no, n.train_no) AS train_no, n.mnvr_uid,
          r.window_start, r.window_end, r.reason,
          (SELECT COUNT(*) FROM evidence_flag e WHERE e.footage_id = f.id AND e.status = 'active') AS active_flags
     FROM delivered_footage f
@@ -42,6 +42,13 @@ const FOOTAGE_LIST = `
     JOIN camera c ON c.id = r.camera_id JOIN nvr_unit n ON n.id = c.nvr_id`;
 
 const TRAIN_COL = 'COALESCE(f.train_no, n.train_no)';
+const MNVR = { uid: 'n.mnvr_uid', name: 'n.name', no: 'COALESCE(f.unit_no, n.unit_no, n.id)' };
+/** The M-NVRs that have recordings in the user's zone(s): the choices offered while typing an M-NVR. */
+async function mnvrChoices(user, zoneId, fromSql) {
+  const w = where(); w.raw(zoneScope(user, 'p.zone_id', w.params, zoneId));
+  const { rows } = await pool.query(`SELECT DISTINCT n.mnvr_uid AS uid, n.name ${fromSql} ${w.sql()} ORDER BY 1 LIMIT 1000`, w.params);
+  return rows;
+}
 const FOOTAGE_FROM = `FROM delivered_footage f JOIN video_request r ON r.id=f.video_request_id JOIN rpf_post p ON p.id=r.post_id JOIN camera c ON c.id=r.camera_id JOIN nvr_unit n ON n.id=c.nvr_id`;
 const EVID_FROM = `FROM evidence_flag e JOIN delivered_footage f ON f.id=e.footage_id JOIN video_request r ON r.id=f.video_request_id JOIN rpf_post p ON p.id=r.post_id JOIN camera c ON c.id=r.camera_id JOIN nvr_unit n ON n.id=c.nvr_id`;
 /** Train numbers that exist in the user's zone(s): the choices offered while typing a train number. */
@@ -60,17 +67,19 @@ router.get('/footage', wrap(async (req, res) => {
   w.raw(zoneScope(req.user, 'p.zone_id', w.params, q.zone_id));
   if (q.post_id) w.add('p.id = ?', Number(q.post_id));
   trainFilter(w, q.train_no, TRAIN_COL);
+  mnvrFilter(w, q.mnvr, MNVR);
   rangeFilter(w, q.from, q.to, q.date_by === 'delivered' ? 'f.delivered_at' : 'COALESCE(f.start_time, r.window_start)');
   if (q.flagged === 'yes') w.raw(`EXISTS (SELECT 1 FROM evidence_flag e WHERE e.footage_id = f.id AND e.status = 'active')`);
   if (q.flagged === 'no') w.raw(`NOT EXISTS (SELECT 1 FROM evidence_flag e WHERE e.footage_id = f.id AND e.status = 'active')`);
-  searchFilter(w, q.q, ['f.id', 'f.video_request_id', 'f.sha256', 'f.file_name', 'c.name', 'n.name', TRAIN_COL, 'p.name']);
+  searchFilter(w, q.q, ['f.id', 'f.video_request_id', 'f.sha256', 'f.file_name', 'c.name', 'n.name', 'n.mnvr_uid', TRAIN_COL, 'p.name']);
   const order = q.sort === 'old' ? 'COALESCE(f.start_time, r.window_start) ASC, f.id ASC' : 'COALESCE(f.start_time, r.window_start) DESC, f.id DESC';
   const limit = parseLimit(q.limit, 50, q.export ? 5000 : 200); const offset = parseOffset(q.offset);
-  const [rows, total, trains] = await Promise.all([
+  const [rows, total, trains, mnvrs] = await Promise.all([
     pool.query(`${FOOTAGE_LIST} ${w.sql()} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`, w.params),
     pool.query(`SELECT COUNT(*) AS n ${FOOTAGE_FROM} ${w.sql()}`, w.params),
-    q.export ? [] : trainChoices(req.user, q.zone_id, FOOTAGE_FROM)]);
-  res.json({ rows: rows.rows, total: total.rows[0].n, trains });
+    q.export ? [] : trainChoices(req.user, q.zone_id, FOOTAGE_FROM),
+    q.export ? [] : mnvrChoices(req.user, q.zone_id, FOOTAGE_FROM)]);
+  res.json({ rows: rows.rows, total: total.rows[0].n, trains, mnvrs });
 }));
 
 async function loadFootage(user, id) {
@@ -110,14 +119,16 @@ router.get('/evidence', wrap(async (req, res) => {
   const exp = Number(q.expiring);
   if (Number.isInteger(exp) && exp > 0) w.add(`(e.retain_to IS NOT NULL AND e.retain_to <= now() + make_interval(days => ?))`, Math.min(exp, 36500));
   trainFilter(w, q.train_no, TRAIN_COL);
+  mnvrFilter(w, q.mnvr, MNVR);
   rangeFilter(w, q.from, q.to, q.date_by === 'flagged' ? 'e.flagged_at' : 'COALESCE(f.start_time, r.window_start)');
-  searchFilter(w, q.q, ['e.id', 'e.justification', 'e.archive_sha256', 'e.local_sha256', 'f.sha256', 'c.name', 'n.name', TRAIN_COL, 'p.name']);
+  searchFilter(w, q.q, ['e.id', 'e.justification', 'e.archive_sha256', 'e.local_sha256', 'f.sha256', 'c.name', 'n.name', 'n.mnvr_uid', TRAIN_COL, 'p.name']);
   const ORDER = { new: 'e.id DESC', old: 'e.id ASC', expiry: 'e.retain_to ASC NULLS LAST, e.id DESC', recorded: 'COALESCE(f.start_time, r.window_start) DESC, e.id DESC' };
   const limit = parseLimit(q.limit, 50, q.export ? 5000 : 200); const offset = parseOffset(q.offset);
-  const [rows, total, trains] = await Promise.all([
+  const [rows, total, trains, mnvrs] = await Promise.all([
     pool.query(`${ev.FLAG_SELECT} ${w.sql()} ORDER BY ${ORDER[q.sort] || ORDER.new} LIMIT ${limit} OFFSET ${offset}`, w.params),
     pool.query(`SELECT COUNT(*) AS n, COALESCE(SUM(e.archive_size_bytes),0) AS bytes ${EVID_FROM} ${w.sql()}`, w.params),
-    q.export ? [] : trainChoices(req.user, q.zone_id, EVID_FROM)]);
+    q.export ? [] : trainChoices(req.user, q.zone_id, EVID_FROM),
+    q.export ? [] : mnvrChoices(req.user, q.zone_id, EVID_FROM)]);
   // the tiles on top of the retention register: counts of everything held in the zone(s), whatever the filters are
   const sw = where(); sw.raw(zoneScope(req.user, 'p.zone_id', sw.params, req.query.zone_id)); sw.raw(`e.status = 'active'`);
   const stats = q.export ? null : (await pool.query(
@@ -126,7 +137,7 @@ router.get('/evidence', wrap(async (req, res) => {
             COUNT(*) FILTER (WHERE e.retention = 'timed' AND e.retain_to <= now() + interval '30 days')::int AS ending30,
             COUNT(*) FILTER (WHERE e.ext_status = 'pending')::int AS pending
        ${EVID_FROM} ${sw.sql()}`, sw.params)).rows[0];
-  res.json({ rows: rows.rows.map((r) => ({ ...r, checksum_check: ev.checksumCheck(r) })), total: total.rows[0].n, archive_bytes: total.rows[0].bytes, trains, stats });
+  res.json({ rows: rows.rows.map((r) => ({ ...r, checksum_check: ev.checksumCheck(r) })), total: total.rows[0].n, archive_bytes: total.rows[0].bytes, trains, mnvrs, stats });
 }));
 
 async function loadFlag(user, id) {
@@ -148,7 +159,8 @@ router.post('/evidence/:id/link', wrap(async (req, res) => {
   const purpose = req.body && req.body.purpose === 'download' ? 'download' : 'view';
   const t = jwt.sign({ k: 'evidence', id: f.id, u: req.user.id, d: purpose === 'download' }, config.jwtSecret, { expiresIn: `${config.footageLinkMinutes}m`, issuer: 'cms-media' });
   await audit(null, { user: req.user, action: `console.evidence.${purpose}`, entity: 'evidence_flag', entityId: f.id, zoneId: f.zone_id, details: { sha256: f.archive_sha256, ...(heldBy ? { held_by: heldBy.name } : {}) } });
-  res.json({ url: `/media/evidence/${f.id}?t=${t}`, held_by: heldBy ? heldBy.name : null });
+  const frag = purpose !== 'download' && f.copy_kind === 'whole' && f.section_start_s != null ? `#t=${f.section_start_s},${f.section_end_s}` : ''; // plays just the flagged section of the whole-file copy
+  res.json({ url: `/media/evidence/${f.id}?t=${t}${frag}`, held_by: heldBy ? heldBy.name : null });
 }));
 router.post('/evidence/:id/retry-archive', wrap(async (req, res) => { await ev.retryArchive(req.user, parseId(req.params.id)); res.json({ ok: true }); }));
 router.post('/evidence/:id/release', wrap(async (req, res) => { await ev.release(req.user, parseId(req.params.id), req.body && req.body.note); res.json({ ok: true }); }));

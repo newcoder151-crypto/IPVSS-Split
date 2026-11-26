@@ -15,6 +15,7 @@ const {
   parseOffset,
   parseTs,
   where,
+  mnvrFilter,
 } = require("../../services/util");
 const { badRequest, notFound, conflict, wrap } = require("../../errors");
 
@@ -30,8 +31,28 @@ router.get(
     w.raw(
       zoneScope(req.user, "n.current_zone_id", w.params, req.query.zone_id),
     );
+    // search: by train number, by M-NVR (its unique id, its number in the train, its name) or by camera (name or number)
+    const q = req.query;
+    const train = typeof q.train === "string" ? q.train.trim().slice(0, 40) : "";
+    if (train) {
+      w.params.push(`%${train.replace(/[%_\\]/g, "")}%`);
+      w.raw(`n.train_no ILIKE $${w.params.length}`);
+    }
+    mnvrFilter(w, q.mnvr, { uid: "n.mnvr_uid", name: "n.name", no: "COALESCE(n.unit_no, n.id)" });
+    const cam = typeof q.camera === "string" ? q.camera.trim().slice(0, 60) : "";
+    if (cam) {
+      w.params.push(`%${cam.replace(/[%_\\]/g, "")}%`);
+      const like = w.params.length;
+      const m = /^c?[\s-]*0*(\d{1,9})$/i.exec(cam);
+      let numSql = "";
+      if (m) {
+        w.params.push(Number(m[1]));
+        numSql = ` OR COALESCE(c.mnvr_camera_id, c.id) = $${w.params.length}`;
+      }
+      w.raw(`EXISTS (SELECT 1 FROM camera c WHERE c.nvr_id = n.id AND (c.name ILIKE $${like}${numSql}))`);
+    }
     const { rows } = await pool.query(
-      `SELECT n.id, n.name, n.train_no, COALESCE(n.unit_no, n.id) AS unit_no, n.status, n.firmware, n.current_zone_id AS zone_id, z.name AS zone_name, n.last_seen, n.last_lat AS lat, n.last_lon AS lon,
+      `SELECT n.id, n.mnvr_uid, n.name, n.train_no, COALESCE(n.unit_no, n.id) AS unit_no, n.status, n.firmware, n.current_zone_id AS zone_id, z.name AS zone_name, n.last_seen, n.last_lat AS lat, n.last_lon AS lon,
             n.last_speed_mps, n.health, (n.last_seen > now() - make_interval(secs => $1)) AS online,
             (SELECT COUNT(*) FROM camera c WHERE c.nvr_id = n.id AND c.active) AS cameras,
             (SELECT COUNT(*) FROM nvr_command m WHERE m.nvr_id = n.id AND m.status IN ('queued','sent','acked')) AS open_commands,
@@ -58,7 +79,7 @@ router.get(
       zoneScope(req.user, "n.current_zone_id", w.params, req.query.zone_id),
     );
     const { rows } = await pool.query(
-      `SELECT n.train_no, n.id AS nvr_id, n.name AS nvr_name, COALESCE(n.unit_no, n.id) AS unit_no, n.status, n.last_seen, (n.last_seen > now() - make_interval(secs => $1)) AS online,
+      `SELECT n.train_no, n.id AS nvr_id, n.mnvr_uid, n.name AS nvr_name, COALESCE(n.unit_no, n.id) AS unit_no, n.status, n.last_seen, (n.last_seen > now() - make_interval(secs => $1)) AS online,
             (SELECT COUNT(*) FROM camera c WHERE c.nvr_id = n.id AND c.active) AS cameras,
             (SELECT COUNT(*) FROM nvr_command m WHERE m.nvr_id = n.id AND m.status IN ('queued','sent','acked')) AS open_commands
        FROM nvr_unit n ${w.sql()} ORDER BY n.train_no, 4`,
@@ -72,6 +93,7 @@ router.get(
         .get(k)
         .units.push({
           nvr_id: r.nvr_id,
+          mnvr_uid: r.mnvr_uid,
           name: r.nvr_name,
           unit_no: r.unit_no,
           status: r.status,
@@ -95,7 +117,13 @@ router.get(
 router.get(
   "/nvrs/:id",
   wrap(async (req, res) => {
-    const id = parseId(req.params.id);
+    let id;
+    if (/^M-[0-9A-F]{6}-\d+$/i.test(req.params.id)) {
+      // the unique id the CMS gave the unit (M-3F9A2C-0007) works wherever the number does
+      const r = await pool.query("SELECT id FROM nvr_unit WHERE mnvr_uid = upper($1)", [req.params.id]);
+      if (!r.rows[0]) throw notFound("NVR not found");
+      id = r.rows[0].id;
+    } else id = parseId(req.params.id);
     const { rows } = await pool.query(
       `SELECT n.*, z.name AS zone_name FROM nvr_unit n LEFT JOIN zone z ON z.id = n.current_zone_id WHERE n.id = $1`,
       [id],

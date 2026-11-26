@@ -10,6 +10,7 @@ const int = (name, dflt) => {
 
 const str = (name) => String(process.env[name] || "").trim();
 const flag = (name) => ["1", "true", "yes", "on"].includes(str(name).toLowerCase());
+const list = (name) => str(name).split(/[\s,;]+/).filter(Boolean);
 
 // Session hours: 0 (the default) = a console session never expires. A positive number = hours (renewed while the console is in use).
 const hours = (name, dflt) => {
@@ -44,7 +45,19 @@ if (jwtSecret.length < 32) {
 }
 
 module.exports = {
-  version: "0.2.1",
+  version: "0.3.0",
+  // Several CMS find each other by themselves (services/directory.js). The port, the key and the other values come from
+  // config/control-room.conf through start.sh - nothing is defaulted here.
+  discovery: {
+    enabled: !["off", "no", "0", "false"].includes(str("CMS_DISCOVERY").toLowerCase()),
+    port: process.env.CMS_DISCOVERY_PORT ? Number(process.env.CMS_DISCOVERY_PORT) : undefined,
+    key: str("CMS_CLUSTER_KEY"),
+    seeds: list("CMS_SEED_URLS"),
+    broadcast: list("CMS_DISCOVERY_BROADCAST"),
+    publicUrl: str("CMS_PUBLIC_URL"),
+    name: str("CMS_NODE_NAME"),
+    location: str("CMS_NODE_LOCATION"),
+  },
   // Hosts, ports and database names are NOT defaulted here: config/control-room.conf is the one place, start.sh hands them over (see main() in server.js).
   port: process.env.PORT ? Number(process.env.PORT) : undefined,
   // If the port is taken, try the next ones (development). Off in production, or with PORT_AUTO=0.

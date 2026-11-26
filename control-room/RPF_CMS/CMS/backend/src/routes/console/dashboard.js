@@ -262,6 +262,12 @@ router.get(
     } catch (_) {
       /* not clustered */
     }
+    try {
+      // CMS found on the network by themselves (cms_directory) that are not answering
+      clusterDown += +(await pool.query(`SELECT COUNT(*) AS n FROM cms_directory WHERE forgotten_at IS NULL AND NOT (reachable AND last_ok_at > now() - interval '45 seconds')`)).rows[0].n;
+    } catch (_) {
+      /* table not there yet */
+    }
     res.json({
       cluster_down: clusterDown,
       notices_unread: +nt.unread,

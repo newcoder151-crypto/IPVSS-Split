@@ -4,7 +4,7 @@ const { pool, withTransaction } = require('../db');
 const config = require('../config');
 const { postScopeSql, canSeePost } = require('../services/scope');
 const { audit } = require('../services/audit');
-const { parseId, parseLimit, parseTs, requireText, rangeSql, likeSql, trainSql } = require('../services/util');
+const { parseId, parseLimit, parseTs, requireText, rangeSql, likeSql, trainSql, mnvrSql } = require('../services/util');
 const { badRequest, notFound, conflict, wrap } = require('../errors');
 const checksumCheck = require('../services/checksumCheck');
 const { auditText } = require('../services/incidentTrail');
@@ -15,7 +15,7 @@ const router = express.Router();
 
 const FLAG_SELECT = `
   SELECT e.id, e.footage_id, e.incident_id, e.retention, e.retain_from, e.retain_to, e.justification, e.status, e.flagged_at,
-         e.section_start_s, e.section_end_s, e.section_from, e.section_to,
+         e.section_start_s, e.section_end_s, e.section_from, e.section_to, e.copy_kind,
          e.archive_status, e.archive_size_bytes, e.archived_at, e.archive_sha256, e.archive_error, e.released_at, e.release_note,
          e.storage, (e.local_path IS NOT NULL) AS has_local, e.local_sha256, e.local_size_bytes, e.local_saved_at, e.local_error, e.local_path,
          u.username AS flagged_by_username,
@@ -23,7 +23,7 @@ const FLAG_SELECT = `
          e.ext_status, e.ext_retention, e.ext_retain_to, e.ext_justification, e.ext_requested_at, e.ext_decided_at, e.ext_decision_note, ux.username AS ext_requested_by_username, ud.username AS ext_decided_by_username,
          f.sha256 AS footage_sha256, f.end_time AS footage_end, f.file_name,
          f.format, f.file_size_bytes, f.duration_s, r.id AS request_id, r.window_start, r.window_end,
-         p.id AS post_id, p.name AS post_name, p.zone_id, c.name AS camera_name, n.name AS nvr_name, COALESCE(f.train_no, n.train_no) AS train_no, COALESCE(f.unit_no, n.unit_no, n.id) AS unit_no, COALESCE(f.camera_no, c.mnvr_camera_id, c.id) AS camera_no, f.start_time AS footage_start, f.train_request_id
+         p.id AS post_id, p.name AS post_name, p.zone_id, c.name AS camera_name, n.name AS nvr_name, COALESCE(f.train_no, n.train_no) AS train_no, n.mnvr_uid, COALESCE(f.unit_no, n.unit_no, n.id) AS unit_no, COALESCE(f.camera_no, c.mnvr_camera_id, c.id) AS camera_no, f.start_time AS footage_start, f.train_request_id
     FROM evidence_flag e
     JOIN users u ON u.id = e.flagged_by
     LEFT JOIN users ux ON ux.id = e.ext_requested_by
@@ -35,6 +35,7 @@ const FLAG_SELECT = `
     JOIN nvr_unit n ON n.id = c.nvr_id`;
 
 const TRAIN_COL = 'COALESCE(f.train_no, n.train_no)';
+const MNVR = { uid: 'n.mnvr_uid', name: 'n.name', no: 'COALESCE(f.unit_no, n.unit_no, n.id)' };
 
 /**
  * GET /api/flags?status=&kept=permanent|timed&expiring=<days>&ext=pending&storage=&q=&train_no=&from=&to=&date_by=recorded|flagged&sort=new|old|expiry&limit=
@@ -52,8 +53,9 @@ router.get('/', wrap(async (req, res) => {
   const exp = Number(q.expiring);
   if (Number.isInteger(exp) && exp > 0) { params.push(Math.min(exp, 36500)); where.push(`(e.retain_to IS NOT NULL AND e.retain_to <= now() + make_interval(days => $${params.length}))`); }
   trainSql(where, params, q.train_no, TRAIN_COL);
+  mnvrSql(where, params, q.mnvr, MNVR);
   rangeSql(where, params, q.from, q.to, q.date_by === 'flagged' ? 'e.flagged_at' : 'COALESCE(f.start_time, r.window_start)');
-  likeSql(where, params, q.q, ['e.id', 'e.justification', 'e.archive_sha256', 'e.local_sha256', 'f.sha256', 'c.name', 'n.name', TRAIN_COL]);
+  likeSql(where, params, q.q, ['e.id', 'e.justification', 'e.archive_sha256', 'e.local_sha256', 'f.sha256', 'c.name', 'n.name', 'n.mnvr_uid', TRAIN_COL]);
   const ORDER = { new: 'e.id DESC', old: 'e.id ASC', expiry: 'e.retain_to ASC NULLS LAST, e.id DESC' };
   const limit = parseLimit(q.limit);
   const { rows } = await pool.query(`${FLAG_SELECT} WHERE ${where.join(' AND ')} ORDER BY ${ORDER[q.sort] || ORDER.new} LIMIT ${limit}`, params);
@@ -95,7 +97,7 @@ router.post('/:id/verify', wrap(async (req, res) => {
   if (!f || !canSeePost(req.user, f.post_id, f.zone_id)) throw notFound('flag not found');
   if (!f.local_path) throw conflict('this flag has no copy saved at the post');
   const abs = localAbs(f.local_path);
-  const whole = f.section_start_s == null;
+  const whole = f.section_start_s == null || f.copy_kind === 'whole';
   const want = whole ? f.footage_sha256 : f.archive_sha256; // what the local copy must equal
   const checks = [];
   let actual = exists(abs) ? await sha256File(abs) : null;
@@ -105,11 +107,15 @@ router.post('/:id/verify', wrap(async (req, res) => {
   else checks.push({ ok: null, text: 'The CMS has not archived this flag yet, so there is nothing to compare with' });
   let repaired = false;
   if (req.body && req.body.repair && want && actual !== want) {
-    const src = !whole && f.archive_status === 'archived' ? await resolveFootageFile(f.archive_path || `archive/zone-${f.zone_id}/flag-${id}.mp4`, f.archive_sha256) : null;
+    let src = null;
+    if (whole) { // repair from the delivered file itself (its checksum is the reference)
+      const dp = (await pool.query('SELECT storage_path FROM delivered_footage WHERE id = $1', [f.footage_id])).rows[0];
+      src = dp ? await resolveFootageFile(dp.storage_path, f.footage_sha256) : null;
+    } else if (f.archive_status === 'archived') src = await resolveFootageFile(f.archive_path || `archive/zone-${f.zone_id}/flag-${id}.mp4`, f.archive_sha256);
     const from = src && src.file;
     if (!from) throw conflict('the CMS archive copy cannot be reached from this post, so the local copy cannot be repaired automatically');
     const fixedSha = await replaceLocal(abs, from);
-    if (fixedSha !== want) throw conflict('the CMS archive copy itself does not match its recorded checksum - tell CMS');
+    if (fixedSha !== want) throw conflict('the source copy itself does not match its recorded checksum - tell CMS');
     await withTransaction(async (client) => {
       await client.query(`UPDATE evidence_flag SET local_sha256 = $2, local_size_bytes = $3, local_saved_at = now(), local_error = NULL WHERE id = $1`, [id, fixedSha, require('fs').statSync(abs).size]);
       await audit(client, { user: req.user, action: 'evidence.local_resync', entity: 'evidence_flag', entityId: id, zoneId: f.zone_id, details: { from_sha256: actual, to_sha256: fixedSha } });
@@ -193,7 +199,9 @@ router.post('/:id/access', wrap(async (req, res) => {
     await audit(client, { user: req.user, action: `${purpose === 'view' ? 'evidence.view' : 'evidence.download'}${source === 'local' ? '.local' : ''}`, entity: 'evidence_flag', entityId: f.id, zoneId: f.zone_id,
       details: { footage_id: f.footage_id, source, sha256: source === 'local' ? f.local_sha256 : f.archive_sha256 } });
   });
-  res.json({ url: `/api/media/${f.footage_id}?token=${token}${purpose === 'download' ? '&download=1' : ''}`, expires_at: expiresAt, format: 'MP4', playable: true, source });
+  // a whole-file copy of a flagged section plays just the section (media fragment); a download is always the whole, checksum-identical file
+  const frag = purpose !== 'download' && f.copy_kind === 'whole' && f.section_start_s != null ? `#t=${f.section_start_s},${f.section_end_s}` : '';
+  res.json({ url: `/api/media/${f.footage_id}?token=${token}${purpose === 'download' ? '&download=1' : ''}${frag}`, expires_at: expiresAt, format: 'MP4', playable: true, source });
 }));
 
 module.exports = router;

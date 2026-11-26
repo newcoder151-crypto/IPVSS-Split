@@ -50,4 +50,16 @@ function trainSql(where, params, text, col) {
   where.push(`(lower(${col}) = lower($${n}) OR lower(split_part(${col}, ' ', 1)) = lower($${n}))`);
 }
 
-module.exports = { parseTs, parseId, parseLimit, requireText, rangeSql, likeSql, trainSql };
+/** M-NVR: its unique id (M-3F9A2C-0007, or part of it), its number in the train (7, M07, M-07) or part of its name. c = { uid, name, no } SQL. */
+function mnvrSql(where, params, text, c) {
+  const t = typeof text === 'string' ? text.trim().slice(0, 60) : '';
+  if (!t) return;
+  params.push(`%${t.replace(/[%_\\]/g, '')}%`);
+  const like = params.length;
+  const parts = [`${c.uid} ILIKE $${like}`, `${c.name} ILIKE $${like}`];
+  const m = /^m?[\s-]*0*(\d{1,9})$/i.exec(t);
+  if (m) { params.push(Number(m[1])); parts.push(`${c.no} = $${params.length}`); }
+  where.push('(' + parts.join(' OR ') + ')');
+}
+
+module.exports = { parseTs, parseId, parseLimit, requireText, rangeSql, likeSql, trainSql, mnvrSql };

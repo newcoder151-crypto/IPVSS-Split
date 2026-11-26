@@ -4,12 +4,14 @@ const fs = require('fs');
 const { pool } = require('../db');
 const config = require('../config');
 const cluster = require('../services/cluster');
+const directory = require('../services/directory');
 const { serveFile } = require('../services/mediaServe');
 const { absPath, exists, mimeFor } = require('../services/fsutil');
 const { notFound, badRequest, wrap } = require('../errors');
 
 /**
  * CMS <-> CMS. Mounted at /cluster (not under /console: browsers never call these).
+ *   GET  /cluster/hello                     signed with the cluster key: who I am, what I hold, which CMS I know (automatic discovery)
  *   GET  /cluster/health                    anybody (a CMS asks "are you there?"): who I am, nothing secret
  *   GET  /cluster/internal/media/:kind/:id  signed: the bytes of a recording that is on MY disk (footage | evidence), with Range
  *   GET  /cluster/internal/info             signed: what data range I hold (a joining CMS needs it to prepare its partitions)
@@ -22,6 +24,8 @@ router.get('/health', wrap(async (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({ ok: true, clustered: !!me, cluster_id: me && me.cluster_id, node_uuid: me && me.node_uuid, node_no: me && me.node_no, name: me && me.name, version: config.version, time: new Date().toISOString() });
 }));
+
+router.get('/hello', directory.requireKey, wrap(async (req, res) => { res.set('Cache-Control', 'no-store'); res.json(await directory.hello()); }));
 
 const internal = express.Router();
 internal.use(cluster.requireCluster);

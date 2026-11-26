@@ -34,6 +34,16 @@ cfg_need(){ local v="${!1:-}"; [[ -n "$v" ]] || v="$(cfg "$1")"; [[ -n "$v" ]] |
 CFG_LOOPBACK_HOST="$(cfg_need LOOPBACK_HOST)"; CFG_DB_HOST="$(cfg_need DB_HOST)"; CFG_DB_PORT="$(cfg_need DB_PORT)"
 CFG_DB_NAME="$(cfg_need DB_NAME)"; CFG_DB_USER="$(cfg_need DB_USER)"; CFG_DB_ADMIN_USER="$(cfg_need DB_ADMIN_USER)"
 CFG_CMS_PORT="$(cfg_need CMS_PORT)"; CFG_RPF_PORT="$(cfg_need RPF_PORT)"; CFG_LOCAL_HOSTS="$(cfg_need LOCAL_HOST_NAMES)"
+# several CMS finding each other (config/control-room.conf; an environment variable of the same name wins for this run). Exported: CMS + RPF read them.
+export_cluster_conf() {
+  local k v
+  for k in CMS_DISCOVERY CMS_DISCOVERY_PORT CMS_CLUSTER_KEY CMS_DISCOVERY_BROADCAST CMS_SEED_URLS CMS_NODE_NAME CMS_NODE_LOCATION EVIDENCE_COPY; do
+    v="${!k:-}"; [[ -n "$v" ]] || v="$(cfg "$k")"
+    export "$k=$v"
+  done
+  CFG_DISCOVERY_PORT="$CMS_DISCOVERY_PORT"
+}
+export_cluster_conf
 CFG_PREFERRED_PREFIX="${PREFERRED_NETWORK_PREFIX:-$(cfg PREFERRED_NETWORK_PREFIX)}"; CFG_SKIP_PREFIXES="${SKIP_NETWORK_PREFIXES:-$(cfg SKIP_NETWORK_PREFIXES)}"
 
 # ---- offline bundle (config/control-room.conf: OFFLINE_*): Node.js + npm, npm packages and the Ubuntu .deb files travel with this folder ----
@@ -359,6 +369,7 @@ allow_network() {
   local fw="${MANAGE_FIREWALL:-$(cfg MANAGE_FIREWALL)}"; fw="${fw:-auto}"; local src="$ip"
   if [[ "$fw" != "no" ]] && command -v ufw >/dev/null 2>&1 && { [[ "$fw" == "yes" ]] || $PS ufw status 2>/dev/null | grep -q "^Status: active"; }; then
     local p; for p in "$CFG_DB_PORT" "$CFG_CMS_PORT"; do $PS ufw allow from "$src" to any port "$p" proto tcp >/dev/null 2>&1 || warn "could not add the ufw rule for $src port $p"; done
+    [[ -n "${CFG_DISCOVERY_PORT:-}" ]] && $PS ufw allow from "$src" to any port "$CFG_DISCOVERY_PORT" proto udp >/dev/null 2>&1 || true   # other CMS announcing themselves
   elif [[ "$fw" != "no" ]]; then
     :   # no ufw in use: nothing to open here (another firewall, if any, must allow $CFG_DB_PORT and $CFG_CMS_PORT from the train network)
   fi
@@ -422,6 +433,11 @@ do_stop() {
   say "stopping CMS + RPF"; (cd "$RPFD" && bash scripts/start.sh stop >/dev/null 2>&1) || true
 }
 
+cms_uid_line() {
+  local u p n pw; u="$(envget "$RPFD/.env" DB_USER)"; u="${u:-$CFG_DB_USER}"; n="$(envget "$RPFD/.env" DB_NAME)"; n="${n:-$CFG_DB_NAME}"; pw="$(envget "$RPFD/.env" DB_PASSWORD)"
+  PGPASSWORD="$pw" psql -h "$CFG_DB_HOST" -p "$CFG_DB_PORT" -U "$u" -d "$n" -tAc "select cms_uid || '  (' || coalesce(name,'') || ')' from cms_identity" 2>/dev/null | head -n1
+}
+
 do_start() {
   [[ -t 0 && ! -s "$ROOT/data/host-ip" ]] && pick_ip   # first start: you choose this PC's address
   ensure_system
@@ -438,6 +454,7 @@ do_start() {
   ensure_cms_db_password
   setup_media
   retire_foreign_services
+  [[ -z "${CMS_PUBLIC_URL:-}" ]] && { local _ip; _ip="$(my_ip)"; [[ -n "$_ip" ]] && export CMS_PUBLIC_URL="http://$_ip:$CFG_CMS_PORT"; }   # how the other CMS reach this one
   say "starting CMS + RPF (database, schema, migrations on first run)"
   if ! (cd "$RPFD" && bash scripts/start.sh start) > "$LOGS/cms-rpf-start.log" 2>&1; then
     if grep -q "rejects the DB_PASSWORD" "$LOGS/cms-rpf-start.log"; then   # (.env was created after the check above)
@@ -468,6 +485,7 @@ do_start() {
   CMS + RPF are running.
     CMS     http://$me:$CMS_PORT/console/        (logins: Admin@123 after the first start)
     RPF     http://$me:$CFG_RPF_PORT
+  Other CMS on this network find this one by themselves (Cluster tab). Unique id of this CMS: $(cms_uid_line)
   Footage folder (CMS + RPF share it): $MEDIA_DIR
   Trains allowed to connect: ${TRAIN_NETS:-none}   (ALLOW_TRAIN_NETWORKS in $CFG; one more PC: bash start.sh allow-train <ip>)
   On each train PC:              bash start.sh --cms $me

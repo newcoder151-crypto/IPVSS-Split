@@ -2,7 +2,7 @@
 /**
  * What the checksums of ONE evidence flag mean (identical in the CMS and the RPF server).
  *
- *   - Retained the WHOLE recording: the CMS archive copy and the post's local copy are byte-for-byte copies of the delivered file,
+ *   - Retained the WHOLE recording (also when a section is flagged and copy_kind = 'whole': the section is only a marker): the CMS archive copy and the post's local copy are byte-for-byte copies of the delivered file,
  *     so every SHA-256 must be the same.
  *   - Retained a SECTION: that is a new, shorter file cut out of the delivered recording, so its SHA-256 can never equal the
  *     SHA-256 of the whole delivered file - that is expected, not an error. What must match is the CMS copy of the section
@@ -11,7 +11,7 @@
  * Returns { state: 'ok' | 'mismatch' | 'pending', whole, lines: [{ ok: true|false|null, text }] }
  */
 module.exports = function checksumCheck(f) {
-  const whole = f.section_start_s == null;
+  const whole = f.section_start_s == null || f.copy_kind === 'whole'; // a whole-file copy is byte-identical to the delivered file even when a section is flagged
   const del = f.footage_sha256; const arc = f.archive_sha256; const loc = f.local_sha256;
   const lines = [];
   if (whole) {

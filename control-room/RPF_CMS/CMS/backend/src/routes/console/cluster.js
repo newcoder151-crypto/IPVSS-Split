@@ -3,6 +3,7 @@ const express = require('express');
 const { pool, withTransaction } = require('../../db');
 const config = require('../../config');
 const cluster = require('../../services/cluster');
+const directory = require('../../services/directory');
 const { audit } = require('../../services/audit');
 const { requireAdmin, requireSuper } = require('../../middleware/auth');
 const { badRequest, notFound, conflict, wrap } = require('../../errors');
@@ -13,24 +14,33 @@ const { badRequest, notFound, conflict, wrap } = require('../../errors');
  */
 const router = express.Router();
 
-router.get('/cluster', wrap(async (req, res) => { res.json(await cluster.overview()); }));
+router.get('/cluster', wrap(async (req, res) => { res.json({ ...(await cluster.overview()), directory: await directory.overview() }); }));
 
-/** Rename / relocate THIS CMS (a CMS writes only its own row of the registry, so nothing ever conflicts). */
+/** Rename / relocate THIS CMS. Works with or without a replication cluster (the name lives in cms_identity; a clustered CMS also updates its registry row). */
 router.patch('/cluster/self', requireAdmin, wrap(async (req, res) => {
-  const me = await cluster.self({ fresh: true });
-  if (!me) throw conflict('this CMS is not part of a cluster yet');
   const b = req.body || {};
   const name = b.name == null ? null : String(b.name).trim().slice(0, 80);
   if (name !== null && !name) throw badRequest('the name cannot be empty');
-  if (b.role != null && !['active', 'standby'].includes(b.role)) throw badRequest('role must be active or standby');
-  const url = b.url == null ? null : String(b.url).trim().replace(/\/+$/, '');
-  if (url && !/^https?:\/\/[^\s]+$/.test(url)) throw badRequest('the address must look like http://10.1.2.3:7080');
-  await withTransaction(async (c) => {
-    await c.query(`UPDATE cms_node SET name = COALESCE($2, name), location = COALESCE($3, location), url = COALESCE($4, url), role = COALESCE($5, role) WHERE node_uuid = $1`,
-      [me.node_uuid, name, b.location == null ? null : String(b.location).trim().slice(0, 120), url, b.role || null]);
-    await audit(c, { user: req.user, action: 'cluster.edit', entity: 'cms_node', entityId: me.node_no, details: { name, location: b.location, url, role: b.role } });
-  });
-  await cluster.self({ fresh: true });
+  const location = b.location == null ? null : String(b.location).trim().slice(0, 120);
+  const me = await cluster.self({ fresh: true });
+  if (me) {
+    if (b.role != null && !['active', 'standby'].includes(b.role)) throw badRequest('role must be active or standby');
+    const url = b.url == null ? null : String(b.url).trim().replace(/\/+$/, '');
+    if (url && !/^https?:\/\/[^\s]+$/.test(url)) throw badRequest('the address must look like http://10.1.2.3:7080');
+    await pool.query(`UPDATE cms_node SET name = COALESCE($2, name), location = COALESCE($3, location), url = COALESCE($4, url), role = COALESCE($5, role) WHERE node_uuid = $1`, [me.node_uuid, name, location, url, b.role || null]);
+    await cluster.self({ fresh: true });
+  }
+  const uid = await directory.rename({ name, location });
+  await withTransaction(async (c) => { await audit(c, { user: req.user, action: 'cluster.edit', entity: 'cms_identity', entityId: 1, details: { cms_uid: uid, name, location } }); });
+  res.json({ ok: true });
+}));
+
+/** Stop listing a CMS that is gone for good (only an offline one). It comes back by itself if it is ever heard again. */
+router.post('/cluster/directory/:uid/forget', requireAdmin, wrap(async (req, res) => {
+  const uid = String(req.params.uid);
+  if (!/^CMS-[0-9A-F]{6}$/.test(uid)) throw badRequest('not a CMS id');
+  if (!(await directory.forget(uid))) throw conflict('that CMS is online (or not in the list)');
+  await withTransaction(async (c) => { await audit(c, { user: req.user, action: 'cluster.forget', entity: 'cms_directory', entityId: 0, details: { cms_uid: uid } }); });
   res.json({ ok: true });
 }));
 
@@ -56,7 +66,7 @@ router.post('/cluster/nodes/:uuid/restore', requireAdmin, wrap(async (req, res) 
 }));
 
 /** Ask every other CMS "are you there?" right now. */
-router.post('/cluster/probe', wrap(async (req, res) => { await cluster.probe(); res.json(await cluster.overview()); }));
+router.post('/cluster/probe', wrap(async (req, res) => { await directory.refresh().catch(() => {}); await cluster.probe().catch(() => {}); res.json({ ...(await cluster.overview()), directory: await directory.overview() }); }));
 
 /** What an administrator needs to add another computer to the cluster. */
 router.get('/cluster/join-info', requireAdmin, wrap(async (req, res) => {
